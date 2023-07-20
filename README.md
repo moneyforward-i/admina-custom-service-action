@@ -14,11 +14,11 @@ This is the action to register a custom service/workspace in Admina
 ## Usage/Examples
 
 ```yaml
-name: "TBD"
-description: "Sync data from various cloud services to Admina"
+name: 'TBD'
+description: 'Sync data from various cloud services to Admina'
 ```
 
-## Imput
+## Input
 
 | Target      | Service             | Key              | Type     | Value                                      |
 | ----------- | ------------------- | ---------------- | -------- | ------------------------------------------ |
@@ -33,15 +33,37 @@ description: "Sync data from various cloud services to Admina"
 |             |                     | source           | Enum Key | [choose enum key](./src/integrate/enum.ts) |
 |             |                     | destination      | Enum Key | [choose enum key](./src/integrate/enum.ts) |
 
-## Acknowledgements
+## Acknowledgments
 
 - [Admina Top](https://admina.moneyforward.com/)
 - [Admina Support](https://support.itmc.i.moneyforward.com/)
 - [Admina API Doc](https://docs.itmc.i.moneyforward.com/)
 
+## Development
+
+How to run locally
+
+```
+## Compile
+npm run build && npm run package
+
+## set env
+export subcommand='sync'
+export source='AzureAd'
+export destination='Admina'
+export admina_org_id=''
+export admina_api_token=''
+export ms_client_id=''
+export ms_tenant_id=''
+export ms_client_secret=''
+
+## call dist/index.js directly
+node dist/index.js
+```
+
 ## Feedback
 
-If you have any feedback, please reach out to us at [ISSUES Page](https://github.com/moneyforward-i/admina-custom-service-action/issues)
+If you have any feedback, please reach out to us at [Issues Page](https://github.com/moneyforward-i/admina-custom-service-action/issues)
 
 ## FAQ
 
