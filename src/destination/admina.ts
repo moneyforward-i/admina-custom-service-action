@@ -23,10 +23,10 @@ class Admina {
         private request_header: any;
 
         constructor(env: NodeJS.ProcessEnv) {
-                if (checkEnv(['ADMINA_ORG_ID', 'ADMINA_API_TOKEN'], env)) {
+                if (checkEnv(['admina_org_id', 'admina_api_token'], env)) {
                         this.endpoint = 'https://api.itmc.i.moneyforward.com'
-                        this.orgId = env.ADMINA_ORG_ID as string;
-                        this.apiKey = env.ADMINA_API_TOKEN as string;
+                        this.orgId = env.admina_org_id as string;
+                        this.apiKey = env.admina_api_token as string;
                 };
                 this.request_header = {
                         headers: {

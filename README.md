@@ -18,18 +18,18 @@ name: "TBD"
 description: "Sync data from various cloud services to Admina"
 ```
 
-## Environment Variables
+## Imput
 
 | Target      | Service             | Key              | Type     | Value                                      |
 | ----------- | ------------------- | ---------------- | -------- | ------------------------------------------ |
-| Source      | Azure AD (Entra ID) | MS_CLIENT_ID     | String   |                                            |
-|             |                     | MS_TENANT_ID     | String   |                                            |
-|             |                     | MS_CLIENT_SECRET | String   |                                            |
+| Source      | Azure AD (Entra ID) | ms_client_id     | String   |                                            |
+|             |                     | ms_tenant_id     | String   |                                            |
+|             |                     | ms_client_secret | String   |                                            |
 |             | Okta                |                  |          |                                            |
 |             | Kintone             |                  |          |                                            |
-| Destination | Admina              | ADMINA_ORG_ID    | String   |                                            |
-|             |                     | ADMINA_API_TOKEN | String   |                                            |
-| Local Exec  | --                  | subcommand       | String   | ["sync"]                                   |
+| Destination | Admina              | admina_org_id    | String   |                                            |
+|             |                     | admina_api_token | String   |                                            |
+| Command     | --                  | subcommand       | String   | ["sync"]                                   |
 |             |                     | source           | Enum Key | [choose enum key](./src/integrate/enum.ts) |
 |             |                     | destination      | Enum Key | [choose enum key](./src/integrate/enum.ts) |
 

@@ -22,10 +22,10 @@ class AzureAD {
         private clientSecret: string;
 
         constructor(env: NodeJS.ProcessEnv) {
-                if (checkEnv(['ADMINA_ORG_ID', 'ADMINA_API_TOKEN', 'MS_CLIENT_ID', 'MS_TENANT_ID', 'MS_CLIENT_SECRET'], env)) {
-                        this.clientId = env.MS_CLIENT_ID as string;
-                        this.tenantId = env.MS_TENANT_ID as string;
-                        this.clientSecret = env.MS_CLIENT_SECRET as string;
+                if (checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], env)) {
+                        this.clientId = env.ms_client_id as string;
+                        this.tenantId = env.ms_tenant_id as string;
+                        this.clientSecret = env.ms_client_secret as string;
                 };
         }
 
