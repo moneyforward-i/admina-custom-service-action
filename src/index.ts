@@ -26,6 +26,7 @@ async function run() {
       console.log(`Start Sync Data from ${source} to ${destination} .`)
 
       await Integration.Sync(source, destination, process.env)
+      console.log('Sync finished.')
     } else {
       throw new Error(`Unsupported subcommand: ${subcommand}`)
     }
@@ -36,7 +37,6 @@ async function run() {
       core.setFailed(error)
     }
   }
-  console.log('Sync finished.')
 }
 
 run()

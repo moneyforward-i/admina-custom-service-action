@@ -65,7 +65,7 @@ class Admina {
       }
     }
 
-    if (!workspaceId) {
+    if (workspaceId == -1) {
       // Create Workspace if it does not exist
       const customWsEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspaces/custom`
       const customWsPayload = {
@@ -97,7 +97,7 @@ class Admina {
       console.log(
         'Workspace already exists | ServiceName:',
         serviceName + '(' + serviceId + ')',
-        ',WorkspaceName:',
+        ', WorkspaceName:',
         targetWorkspaceName + '(' + workspaceId + ')'
       )
     }

@@ -60,7 +60,7 @@ class Admina {
                     break;
                 }
             }
-            if (!workspaceId) {
+            if (workspaceId == -1) {
                 // Create Workspace if it does not exist
                 const customWsEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspaces/custom`;
                 const customWsPayload = {
@@ -81,7 +81,7 @@ class Admina {
             }
             else {
                 // Skip Workspace Creation if it already exist
-                console.log('Workspace already exists | ServiceName:', serviceName + '(' + serviceId + ')', ',WorkspaceName:', targetWorkspaceName + '(' + workspaceId + ')');
+                console.log('Workspace already exists | ServiceName:', serviceName + '(' + serviceId + ')', ', WorkspaceName:', targetWorkspaceName + '(' + workspaceId + ')');
             }
             yield this.registerUserAccountToCustomWorkspace(serviceId, workspaceId, targetWorkspaceName, appInfo.users);
         });
@@ -200,6 +200,7 @@ function run() {
                 const destination = core.getInput('destination');
                 console.log(`Start Sync Data from ${source} to ${destination} .`);
                 yield Integration.Sync(source, destination, process.env);
+                console.log('Sync finished.');
             }
             else {
                 throw new Error(`Unsupported subcommand: ${subcommand}`);
@@ -213,7 +214,6 @@ function run() {
                 core.setFailed(error);
             }
         }
-        console.log('Sync finished.');
     });
 }
 run();
