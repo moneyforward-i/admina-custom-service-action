@@ -11,12 +11,12 @@ export interface UserInfo {
   displayName: string
 }
 
-export function registerCustomService(
+export async function registerCustomService(
   app: AppInfo,
   env: NodeJS.ProcessEnv
-): void {
+): Promise<void> {
   const admina = new Admina(env)
-  admina.registerCustomService(app)
+  await admina.registerCustomService(app)
 }
 
 class Admina {

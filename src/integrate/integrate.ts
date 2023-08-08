@@ -44,7 +44,7 @@ const syncToAdmina = async (source: Source, env: NodeJS.ProcessEnv) => {
       console.log('Registering custom service...')
       await Promise.all(
         azureAdData.map(async (app: AzureAdSource.AppInfo) => {
-          AdminaDist.registerCustomService(
+          await AdminaDist.registerCustomService(
             await AzureAdTransform.transformDataToAdmina(app),
             env
           )
