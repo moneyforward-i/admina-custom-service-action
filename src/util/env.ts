@@ -1,6 +1,9 @@
-export function checkEnv(variables: string[], env: NodeJS.ProcessEnv): boolean {
+export function checkEnv(
+  variables: string[],
+  inputs: Record<string, string>
+): boolean {
   variables.forEach(variable => {
-    if (!env[variable]) {
+    if (!inputs[variable]) {
       throw new Error(`Environment variable ${variable} is not set`)
     }
   })

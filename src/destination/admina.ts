@@ -13,9 +13,9 @@ export interface UserInfo {
 
 export async function registerCustomService(
   app: AppInfo,
-  env: NodeJS.ProcessEnv
+  inputs: Record<string, string>
 ): Promise<void> {
-  const admina = new Admina(env)
+  const admina = new Admina(inputs)
   await admina.registerCustomService(app)
 }
 
@@ -25,11 +25,11 @@ class Admina {
   private apiKey: string
   private request_header: any
 
-  constructor(env: NodeJS.ProcessEnv) {
-    checkEnv(['admina_org_id', 'admina_api_token'], env)
+  constructor(inputs: Record<string, string>) {
+    checkEnv(['admina_org_id', 'admina_api_token'], inputs)
     this.endpoint = 'https://api.itmc.i.moneyforward.com'
-    this.orgId = env.admina_org_id as string
-    this.apiKey = env.admina_api_token as string
+    this.orgId = inputs['admina_org_id']
+    this.apiKey = inputs['admina_api_token']
     this.request_header = {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
