@@ -21,11 +21,11 @@ class AzureAD {
   private tenantId: string
   private clientSecret: string
 
-  constructor(env: NodeJS.ProcessEnv) {
-    checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], env)
-    this.clientId = env.ms_client_id as string
-    this.tenantId = env.ms_tenant_id as string
-    this.clientSecret = env.ms_client_secret as string
+  constructor(inputs: Record<string, string>) {
+    checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], inputs)
+    this.clientId = inputs['ms_client_id']
+    this.tenantId = inputs['ms_tenant_id']
+    this.clientSecret = inputs['ms_client_secret']
   }
 
   private async getAccessToken() {
@@ -190,7 +190,9 @@ class AzureAD {
   }
 }
 
-export const fetchApps = (env: NodeJS.ProcessEnv): Promise<AppInfo[]> => {
-  const aad = new AzureAD(env)
+export const fetchApps = (
+  inputs: Record<string, string>
+): Promise<AppInfo[]> => {
+  const aad = new AzureAD(inputs)
   return aad.fetchSsoApps()
 }

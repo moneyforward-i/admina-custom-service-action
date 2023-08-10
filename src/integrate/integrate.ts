@@ -13,7 +13,7 @@ import {Source, Destination} from '../integrate/enum'
 export const Sync = async (
   src: string,
   dist: string,
-  env: NodeJS.ProcessEnv
+  inputs: Record<string, string>
 ) => {
   const destination = Destination[dist as keyof typeof Destination]
   const source = Source[src as keyof typeof Source]
@@ -28,25 +28,25 @@ export const Sync = async (
   switch (destination) {
     case Destination.Admina:
       // Call the sync function for Azure AD with all environment variables
-      await syncToAdmina(source, env)
+      await syncToAdmina(source, inputs)
       break
     default:
       throw new Error(`Undeveloped destination: ${destination}`)
   }
 }
 
-const syncToAdmina = async (source: Source, env: NodeJS.ProcessEnv) => {
+const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
   switch (source) {
     case Source.AzureAd:
       // Get AzureAd Data
       console.log('Getting Azure AD data...')
-      const azureAdData = await AzureAdSource.fetchApps(env)
+      const azureAdData = await AzureAdSource.fetchApps(inputs)
       console.log('Registering custom service...')
       await Promise.all(
         azureAdData.map(async (app: AzureAdSource.AppInfo) => {
           await AdminaDist.registerCustomService(
             await AzureAdTransform.transformDataToAdmina(app),
-            env
+            inputs
           )
         })
       )
