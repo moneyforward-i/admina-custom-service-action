@@ -43,22 +43,28 @@ jobs:
           ms_client_id: ${{ secrets.ADMINA_SYNC_SAMLAPPS_TASK_MS_CLIENT_ID }}
           ms_tenant_id: ${{ secrets.ADMINA_SYNC_SAMLAPPS_TASK_MS_TENANT_ID }}
           ms_client_secret: ${{ secrets.ADMINA_SYNC_SAMLAPPS_TASK_MS_CLIENT_SECRET }}
+          register_disabled_app: 'false'
+          register_zero_user_app: 'false'
+          target_services: 'Amazon Web Service, SmartHR'
 ```
 
 ## Input
 
-| Target      | Service             | Key              | Type     | Value                                      |
-| ----------- | ------------------- | ---------------- | -------- | ------------------------------------------ |
-| Source      | Azure AD (Entra ID) | ms_client_id     | String   |                                            |
-|             |                     | ms_tenant_id     | String   |                                            |
-|             |                     | ms_client_secret | String   |                                            |
-|             | Okta                |                  |          |                                            |
-|             | Kintone             |                  |          |                                            |
-| Destination | Admina              | admina_org_id    | String   |                                            |
-|             |                     | admina_api_token | String   |                                            |
-| Command     | --                  | subcommand       | String   | ["sync"]                                   |
-|             |                     | source           | Enum Key | [choose enum key](./src/integrate/enum.ts) |
-|             |                     | destination      | Enum Key | [choose enum key](./src/integrate/enum.ts) |
+| Target      | Service             | Key                    | Type     | Value                                      | Default | Required | 　Note                                                                   |
+| ----------- | ------------------- | ---------------------- | -------- | ------------------------------------------ | ------- | -------- | ------------------------------------------------------------------------ |
+| Command     | --                  | subcommand             | String   | ["sync"]                                   |         | true     | Specifies the command to execute.                                        |
+|             |                     | source                 | Enum Key | [choose enum key](./src/integrate/enum.ts) |         | true     | Specifies the source of the data.                                        |
+|             |                     | destination            | Enum Key | [choose enum key](./src/integrate/enum.ts) |         | true     | Specifies the destination of the data.                                   |
+| Source      | Azure AD (Entra ID) | ms_client_id           | String   |                                            |         |          | Specify the ClientID to connect to AzureAD.                              |
+|             |                     | ms_tenant_id           | String   |                                            |         |          | Specify the TenantID to connect to AzureAD.                              |
+|             |                     | ms_client_secret       | String   |                                            |         |          | Specify the ClientSecret to connect to AzureAD.                          |
+|             | Okta                |                        |          |                                            |         |          |                                                                          |
+|             | Kintone             |                        |          |                                            |         |          |                                                                          |
+| Destination | Admina              | admina_org_id          | String   |                                            |         |          | Specify The OrganizationID to connect to Admina.                         |
+|             |                     | admina_api_token       | String   |                                            |         |          | Specify The API Key to connect to Admina.                                |
+| Options     | --                  | register_disabled_app  | String   | "true" / "false"                           | "false" |          | (Optional) Skip registration if the acquired app is disabled.            |
+|             |                     | register_zero_user_app | String   | "true" / "false"                           | "false" |          | (Optional) Skip registration if no user is assigned to the acquired app. |
+|             |                     | target_services        | String   | comma-separated string                     |         |          | (Optional) Specify the application to be registered.                     |
 
 ## Acknowledgments
 

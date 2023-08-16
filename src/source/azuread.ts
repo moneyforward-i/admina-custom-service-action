@@ -1,12 +1,14 @@
 import axios from 'axios'
-import {checkEnv} from '../util/env'
+import { checkEnv } from '../util/env'
+import { PromisePool } from '@supercharge/promise-pool'
 
 export interface AppInfo {
   appId: string
   displayName: string
   principleId: string
-  applicationTemplateId?: string
+  signInAudience: string
   identifierUris: string[]
+  tags: string[]
   users: UserInfo[]
 }
 
@@ -20,12 +22,18 @@ class AzureAD {
   private clientId: string
   private tenantId: string
   private clientSecret: string
+  private register_zero_user_app: boolean
+  private register_disabled_app: boolean
+  private target_services: string[]
 
   constructor(inputs: Record<string, string>) {
     checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], inputs)
     this.clientId = inputs['ms_client_id']
     this.tenantId = inputs['ms_tenant_id']
     this.clientSecret = inputs['ms_client_secret']
+    this.register_zero_user_app = inputs['register_zero_user_app'] === 'true'
+    this.register_disabled_app = inputs['register_disabled_app'] === 'true'
+    this.target_services = inputs['target_services'] ? inputs['target_services'].split(',') : [];
   }
 
   private async getAccessToken() {
@@ -58,8 +66,12 @@ class AzureAD {
 
   private async getEnterpriseApplications(
     accessToken: string,
-    url = 'https://graph.microsoft.com/v1.0/applications'
+    serviceNames: string[] = [],
+    baseURL = 'https://graph.microsoft.com/v1.0/applications'
   ) {
+    const filterQueries = serviceNames.map(name => `(displayName eq '${name}')`).join(' or ');
+    const url = filterQueries ? `${baseURL}?$filter=${filterQueries}` : baseURL;
+
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`
@@ -67,9 +79,18 @@ class AzureAD {
     })
     const apps = response.data.value
 
-    // Map each app to the AppInfo interface and get the corresponding service principal id
-    let appInfos = await Promise.all(
-      apps.map(async (app: AppInfo) => {
+    // AppInfo型として必要なプロパティを定義
+    const appInfoKeys = ['appId', 'displayName', 'signInAudience', 'identifierUris', 'tags'] as const
+
+    // 型ガード関数を定義
+    const isAppInfo = (obj: unknown): obj is AppInfo => {
+      return appInfoKeys.every(key => Object.prototype.hasOwnProperty.call(obj, key))
+    }
+    // PromisePoolで並列処理を実行
+    const { results } = await PromisePool
+      .for<AppInfo>(apps.filter(isAppInfo)) // 型ガードでフィルタリング
+      .withConcurrency(5) // 並列数を5に制限
+      .process(async (app: AppInfo) => {
         // Get the service principal id
         const servicePrincipalUrl = `https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`
         const servicePrincipalResponse = await axios.get(servicePrincipalUrl, {
@@ -78,30 +99,41 @@ class AzureAD {
           }
         })
         const servicePrincipalId = servicePrincipalResponse.data.value[0]?.id
+        const tags: string[] = servicePrincipalResponse.data.value[0]?.tags ?? []
         const appInfo: AppInfo = {
           appId: app.appId,
           displayName: app.displayName,
           principleId: servicePrincipalId,
-          applicationTemplateId: app.applicationTemplateId,
+          signInAudience: app.signInAudience,
           identifierUris: app.identifierUris,
+          tags: tags,
           users: []
         }
         return appInfo
       })
-    )
+    let appInfos = results
+
     // After the Promise.all is resolved, then filter the apps
     appInfos = appInfos.filter(
-      appInfo => appInfo.applicationTemplateId !== null
+      appInfo =>
+        appInfo.tags &&
+        appInfo.tags.some(tag =>
+          tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
+          tag.startsWith('WindowsAzureActiveDirectoryGalleryApplication') ||
+          tag === 'WindowsAzureActiveDirectoryCustomSingleSignOnApplication'
+        )
     )
+
 
     if (response.data['@odata.nextLink']) {
       const nextApps = await this.getEnterpriseApplications(
         accessToken,
+        serviceNames,
         response.data['@odata.nextLink']
       )
       appInfos = appInfos.concat(nextApps)
     }
-
+    console.log(`Getting ${appInfos.length} apps ... and more.`)
     return appInfos
   }
 
@@ -119,21 +151,24 @@ class AzureAD {
       .filter((user: any) => user.principalId !== null)
       .map((user: any) => user.principalId)
 
-    const userInfoPromises = user_principals.map(async principal_id => {
-      const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
-      const userResponse = await axios.get(userUrl, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`
-        }
+    // PromisePoolで並列処理を実行
+    const { results } = await PromisePool
+      .for(user_principals)
+      .withConcurrency(5) // 並列数を5に制限
+      .process(async (principal_id: string) => {
+        const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
+        const userResponse = await axios.get(userUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
+          }
+        })
+        return {
+          email: userResponse.data.userPrincipalName,
+          displayName: userResponse.data.displayName,
+          principalId: principal_id
+        } as UserInfo
       })
-      const userInfo: UserInfo = {
-        email: userResponse.data.userPrincipalName,
-        displayName: userResponse.data.displayName,
-        principalId: principal_id
-      }
-      return userInfo
-    })
-    let userInfos = await Promise.all(userInfoPromises)
+    let userInfos = results
 
     if (response.data['@odata.nextLink']) {
       const nextUsers = await this.getUsers(
@@ -146,7 +181,7 @@ class AzureAD {
     return userInfos
   }
 
-  private async getAppAssignedUsers(
+  private async getAppInfos(
     accessToken: string,
     app: AppInfo
   ): Promise<AppInfo> {
@@ -157,8 +192,9 @@ class AzureAD {
       appId: app.appId,
       displayName: app.displayName,
       principleId: app.principleId,
-      applicationTemplateId: app.applicationTemplateId,
+      signInAudience: app.signInAudience,
       identifierUris: app.identifierUris,
+      tags: app.tags,
       users: usersInfo
     }
 
@@ -171,19 +207,35 @@ class AzureAD {
     try {
       const accessToken = await this.getAccessToken()
       const enterpriseApplications = await this.getEnterpriseApplications(
-        accessToken
+        accessToken,
+        this.target_services
       )
+      console.log(`Detected ${enterpriseApplications.length} SSO apps`)
 
-      const dataPromises = enterpriseApplications.map(appInfo =>
-        this.getAppAssignedUsers(accessToken, appInfo).catch(err => {
-          console.error(
-            `Failed to get assigned users for app ${appInfo.id}: ${err}`
-          )
-          return null
-        })
-      )
-      const data = await Promise.all(dataPromises)
-      return data.filter(appInfo => appInfo !== null) as AppInfo[]
+      const { results } = await PromisePool
+        .for(enterpriseApplications)
+        .withConcurrency(5) // 並列数を5に制限
+        .process(appInfo =>
+          this.getAppInfos(accessToken, appInfo).catch(err => {
+            throw new Error(`Failed to get assigned users for app ${appInfo.appId}: ${err}`)
+          })
+        )
+
+      let filteredResults = results.filter(appInfo => appInfo !== null) as AppInfo[]
+
+      if (!this.register_zero_user_app) {
+        console.log(`Filtering apps with zero users...`)
+        filteredResults = filteredResults.filter(appInfo => appInfo.users.length > 0)
+        console.log(`The number after applying the filter is ${filteredResults.length}`)
+      }
+
+      if (!this.register_disabled_app) {
+        console.log(`Filtering disabled apps...`)
+        filteredResults = filteredResults.filter(appInfo => !appInfo.tags.includes('HideApp'))
+        console.log(`The number after applying the filter is ${filteredResults.length}`)
+      }
+
+      return filteredResults
     } catch (error) {
       throw new Error(`Error fetching SSO apps: ${error}`)
     }
