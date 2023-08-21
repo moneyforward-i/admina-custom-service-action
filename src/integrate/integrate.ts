@@ -47,7 +47,7 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
       try {
         const { results, errors } = await PromisePool
           .for(azureAdData)
-          .withConcurrency(2) // 並列数を5に制限
+          .withConcurrency(5) // 並列数を5に制限
           .process(async (app: AzureAdSource.AppInfo) => {
             await AdminaDist.registerCustomService(
               await AzureAdTransform.transformDataToAdmina(app),
@@ -55,6 +55,7 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
             )
           })
         errors.forEach(error => {
+          throw
           if (error instanceof Error) {
             throw new Error(error.message);
           }
