@@ -44,15 +44,28 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
       console.log('Getting Azure AD data...')
       const azureAdData = await AzureAdSource.fetchApps(inputs)
       console.log('Registering custom service...')
-      await PromisePool
-        .for(azureAdData)
-        .withConcurrency(2) // 並列数を5に制限
-        .process(async (app: AzureAdSource.AppInfo) => {
-          await AdminaDist.registerCustomService(
-            await AzureAdTransform.transformDataToAdmina(app),
-            inputs
-          )
+      try {
+        const { results, errors } = await PromisePool
+          .for(azureAdData)
+          .withConcurrency(2) // 並列数を5に制限
+          .process(async (app: AzureAdSource.AppInfo) => {
+            await AdminaDist.registerCustomService(
+              await AzureAdTransform.transformDataToAdmina(app),
+              inputs
+            )
+          })
+        errors.forEach(error => {
+          if (error instanceof Error) {
+            throw new Error(error.message);
+          }
         })
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(error.message);
+        } else {
+          throw new Error(`Failed to register application data. :${error}`);
+        }
+      }
       break
     default:
       throw new Error(`Undeveloped source: ${source}`)
