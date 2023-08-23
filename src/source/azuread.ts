@@ -150,97 +150,100 @@ class AzureAD {
     return appInfos
   }
 
-  private async getUserPrincipals(accessToken: string, url: string, userPrincipals: string[] = []): Promise<string[]> {
+  private async getUserPrincipals(accessToken: string, url: string): Promise<string[]> {
+    let userPrincipals = [] as string[]
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`
       }
     })
-
+    // console.log(response.data)
+    // {
+    //   id: 'dummyNr6HU2hSSmwM_pdN5-_UE-dummyuzEg3Pt098I',
+    //   deletedDateTime: null,
+    //   appRoleId: 'dummmmmy-c3bd-439b-9a66-3a2aee01d14f',
+    //   createdDateTime: '2021-08-10T04:02:58.0119555Z',
+    //   principalDisplayName: 'SAMPLE_GROUP_NAME',
+    //   principalId: 'dummmmmy-fada-4d1d-a149-29b033fa5d37',
+    //   principalType: 'Group',
+    //   resourceDisplayName: 'APPNAME',
+    //   resourceId: 'dummmmmy-4997-4c24-96df-f13f09e2419d'
+    // }
     const users = response.data.value.filter((user: any) => user.principalType === 'User' && user.principalId !== null)
     const groups = response.data.value.filter((group: any) => group.principalType === 'Group' && group.principalId !== null)
 
-    console.log(`Getting ${users.length} users and ${groups.length} groups ...`)
+    //console.log(`Getting ${users.length} users and ${groups.length} groups ...`)
     const newUserPrincipals = users.map((user: any) => user.principalId)
 
-    userPrincipals = userPrincipals.concat(newUserPrincipals)
-
-    // PromisePoolで並列処理を実行
-    let userInfos = [] as UserInfo[]
-    try {
-      const { results, errors } = await PromisePool
-        .for(userPrincipals)
-        .withConcurrency(5) // 並列数を5に制限
-        .process(async (principal_id: string) => {
-          const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
-          const userResponse = await axios.get(userUrl, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`
-            }
-          })
-          return {
-            email: userResponse.data.userPrincipalName,
-            displayName: userResponse.data.displayName,
-            principalId: principal_id
-          } as UserInfo
-        })
-      userInfos = results
-
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(error.message);
-      } else {
-        throw new Error(`Failed to register application data. :${error}`);
-      }
-    }
+    userPrincipals.concat(newUserPrincipals)
 
     for (const group of groups) {
-      console.log(`Getting group members from ${group.principalDisplayName}:${group.principalType}...`)
-      const groupMembersUrl = `https://graph.microsoft.com/v1.0/groups/${group.id}/members`
+      console.log(`Getting group members from ${group.principalDisplayName}:${group.principalType}...: ${group.principalId}`)
+      const groupMembersUrl = `https://graph.microsoft.com/v1.0/groups/${group.principalId}/members`
       const groupMembers = await this.getGroupMembers(accessToken, groupMembersUrl)
-      const groupMemberIds = groupMembers.map((member: any) => member.principalId)
+      const groupMemberIds = groupMembers.map((member: any) => member.id)
       userPrincipals = userPrincipals.concat(groupMemberIds)
+      console.log(`Getting ${groupMembers.length} group members from ${group.principalDisplayName}`)
     }
 
     if (response.data['@odata.nextLink']) {
-      const nextUserPrincipals = await this.getUserPrincipals(accessToken, response.data['@odata.nextLink'], userPrincipals)
+      const nextUserPrincipals = await this.getUserPrincipals(accessToken, response.data['@odata.nextLink'])
       userPrincipals = userPrincipals.concat(nextUserPrincipals)
     }
+
     return userPrincipals
   }
 
-  private async getGroupMembers(accessToken: string, url: string, members: any[] = []): Promise<any[]> {
+  private async getGroupMembers(accessToken: string, url: string): Promise<any[]> {
+    let members = [] as any[]
+    //console.log(`Getting group members from ${url} ...`)
     try {
       const response = await axios.get(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`
         }
       })
-      const users = response.data.value.filter((user: any) => user.principalType === 'User' && user.principalId !== null)
-      const groups = response.data.value.filter((group: any) => group.principalType === 'Group' && group.principalId !== null)
-      console.log(`Getting more ${users.length} users and ${groups.length} groups ...`)
+      //console.log(response.data)
+      // {
+      //   '@odata.type': '#microsoft.graph.user',
+      //   id: 'dummmmmy-60c8-426a-8a23-0380aa0df0a0',
+      //   businessPhones: [],
+      //   displayName: 'LastName FirstName',
+      //   givenName: 'xxxx',
+      //   jobTitle: null,
+      //   mail: 'xxxx@example.com',
+      //   mobilePhone: null,
+      //   officeLocation: null,
+      //   preferredLanguage: null,
+      //   surname: 'xxxx',
+      //   userPrincipalName: 'xxxx@example.com'
+      // },
+      const users = response.data.value.filter((user: any) => user["@odata.type"] === "#microsoft.graph.user" && user.Id !== null);
+      const groups = response.data.value.filter((group: any) => group["@odata.type"] === "#microsoft.graph.group" && group.Id !== null);
+      //console.log(`Getting more ${users.length} users and ${groups.length} groups ...`)
 
       members = members.concat(users)
 
       for (const group of groups) {
-        const groupMembersUrl = `https://graph.microsoft.com/v1.0/groups/${group.id}/members`
+        const groupMembersUrl = `https://graph.microsoft.com/v1.0/groups/${group.principalId}/members`
         const groupMembers = await this.getGroupMembers(accessToken, groupMembersUrl)
         members = members.concat(groupMembers)
       }
 
       if (response.data['@odata.nextLink']) {
-        const nextMembers = await this.getGroupMembers(accessToken, response.data['@odata.nextLink'], members)
+        const nextMembers = await this.getGroupMembers(accessToken, response.data['@odata.nextLink'])
         members = members.concat(nextMembers)
       }
     } catch (error: any) {
-      console.log(error)
+      //console.log(error)
     }
-
+    //console.log(`Got ${members.length} members from ${url} ... `)
     return members
   }
 
   private async getUserInfo(accessToken: string, principal_id: string): Promise<UserInfo> {
     const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
+    //console.log(`Getting user info from ${userUrl} ...`)
     const userResponse = await axios.get(userUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`
@@ -255,7 +258,12 @@ class AzureAD {
 
   private async getUsers(accessToken: string, url: string): Promise<UserInfo[]> {
     const principals = await this.getUserPrincipals(accessToken, url)
+    const uniquePrincipals = [...new Set(principals)];
+    console.log('the length of uniquePrincipals is ' + uniquePrincipals.length)
+    console.log('the length of principals is ' + principals.length)
 
+
+    console.log(`Getting ${principals.length} users from ${url} ...`)
     const { results } = await PromisePool
       .for(principals)
       .withConcurrency(5) // 並列数を5に制限
@@ -265,11 +273,28 @@ class AzureAD {
 
     return results
   }
+
+  // private async listGroups(accessToken: string): Promise<void> {
+  //   const url = `https://graph.microsoft.com/v1.0/groups`
+  //   const response = await axios.get(url, {
+  //     headers: {
+  //       Authorization: `Bearer ${accessToken}`
+  //     }
+  //   })
+  //   //console.log(response.data)
+
+  //   for (const group of response.data.value) {
+  //     console.log(group.displayName)
+  //     this.getGroupMembers(accessToken, `https://graph.microsoft.com/v1.0/groups/${group.id}/members`)
+  //   }
+  // }
+
+
   private async getAppInfos(
     accessToken: string,
     app: AppInfo
   ): Promise<AppInfo> {
-    console.log(`Getting users in ${app.displayName} ...`)
+    console.log(`Start to get ${app.displayName}'s AppInfos ...`)
     const url = `https://graph.microsoft.com/v1.0/servicePrincipals/${app.principleId}/appRoleAssignedTo`
     const usersInfo = await this.getUsers(accessToken, url)
 
