@@ -8,9 +8,9 @@ import * as AzureAdTransform from '../transform/azuread'
 import * as AdminaDist from '../destination/admina'
 
 // Data
-import {Source, Destination} from '../integrate/enum'
+import { Source, Destination } from '../integrate/enum'
 
-import {PromisePool} from '@supercharge/promise-pool'
+import { PromisePool } from '@supercharge/promise-pool'
 
 export const Sync = async (
   src: string,
@@ -44,27 +44,22 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
       console.log('Getting Azure AD data...')
       const azureAdData = await AzureAdSource.fetchApps(inputs)
       console.log('Registering custom service...')
-      try {
-        const {results, errors} = await PromisePool.for(azureAdData)
-          .withConcurrency(2) // Limit the parallel processes to 2.
-          .process(async (app: AzureAdSource.AppInfo) => {
-            await AdminaDist.registerCustomService(
-              await AzureAdTransform.transformDataToAdmina(app),
-              inputs
-            )
-          })
-        errors.forEach(error => {
-          if (error instanceof Error) {
-            throw new Error(error.message)
-          }
+      const { results, errors } = await PromisePool.for(azureAdData)
+        .withConcurrency(2) // Limit the parallel processes to 2.
+        .process(async (app: AzureAdSource.AppInfo) => {
+          await AdminaDist.registerCustomService(
+            await AzureAdTransform.transformDataToAdmina(app),
+            inputs
+          )
         })
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(error.message)
-        } else {
-          throw new Error(`Failed to register application data. :${error}`)
-        }
+
+      errors.forEach(error => {
+        console.log('Failed to register service', error)
+      })
+      if (errors.length > 0) {
+        throw new Error('Failed to register services.')
       }
+
       break
     default:
       throw new Error(`Undeveloped source: ${source}`)
