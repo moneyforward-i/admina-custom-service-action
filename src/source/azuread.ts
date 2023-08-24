@@ -1,6 +1,6 @@
 import axios from 'axios'
-import { checkEnv } from '../util/env'
-import { PromisePool } from '@supercharge/promise-pool'
+import {checkEnv} from '../util/env'
+import {PromisePool} from '@supercharge/promise-pool'
 
 export interface AppInfo {
   appId: string
@@ -54,7 +54,7 @@ class AzureAD {
     this.token_expiry_time = Math.floor(Date.now() / 1000)
   }
 
-  private async getAccessToken(): Promise<{ token: string; expiresIn: number }> {
+  private async getAccessToken(): Promise<{token: string; expiresIn: number}> {
     console.log('🔐 Getting access token...')
     const url = new URL(
       `https://login.microsoftonline.com/${this.tenantId}/oauth2/v2.0/token`
@@ -123,8 +123,9 @@ class AzureAD {
     }
     // PromisePoolで並列処理を実行
     let appInfos = [] as AppInfo[]
-    const { results, errors } = await PromisePool.for<AppInfo>(
-      apps.filter(isAppInfo)) // 型ガードでフィルタリング
+    const {results, errors} = await PromisePool.for<AppInfo>(
+      apps.filter(isAppInfo)
+    ) // 型ガードでフィルタリング
       .withConcurrency(5) // 並列数を5に制限
       .process(async (app: AppInfo) => {
         // Get the service principal id
@@ -333,7 +334,7 @@ class AzureAD {
     console.log(
       `Fetched ${uniquePrincipals.length} users ... and start to fetch the user info`
     )
-    const { results, errors } = await PromisePool.for(uniquePrincipals)
+    const {results, errors} = await PromisePool.for(uniquePrincipals)
       .withConcurrency(5) // 並列数を5に制限
       .process(async (principal_id: string) => {
         return await this.getUserInfo(accessToken, principal_id)
@@ -369,7 +370,7 @@ class AzureAD {
         const activeGroups = response.data.value.filter(
           (g: any) => !g.deletedDateTime
         )
-        const { results, errors } = await PromisePool.for(activeGroups)
+        const {results, errors} = await PromisePool.for(activeGroups)
           .withConcurrency(5)
           .process(async (group: any) => {
             let list = await this.getGroupMembers(accessToken, group.id)
@@ -464,13 +465,15 @@ class AzureAD {
       )
       return appInfoWithUsers
     } catch (error) {
-      console.log(`❌ Fail to get [ ${app.displayName} ]'s AppInfos ... (${app.principleId})`)
+      console.log(
+        `❌ Fail to get [ ${app.displayName} ]'s AppInfos ... (${app.principleId})`
+      )
       throw new Error('Fail to get app info.')
     }
   }
 
   public async fetchSsoApps(): Promise<AppInfo[]> {
-    await this.getAccessToken().then(async ({ token, expiresIn }) => {
+    await this.getAccessToken().then(async ({token, expiresIn}) => {
       this.access_token = token
       this.token_expiry_time = this.token_expiry_time + expiresIn
 

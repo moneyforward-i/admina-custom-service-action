@@ -365,25 +365,16 @@ const syncToAdmina = (source, inputs) => __awaiter(void 0, void 0, void 0, funct
             console.log('Getting Azure AD data...');
             const azureAdData = yield AzureAdSource.fetchApps(inputs);
             console.log('Registering custom service...');
-            try {
-                const { results, errors } = yield promise_pool_1.PromisePool.for(azureAdData)
-                    .withConcurrency(2) // Limit the parallel processes to 2.
-                    .process((app) => __awaiter(void 0, void 0, void 0, function* () {
-                    yield AdminaDist.registerCustomService(yield AzureAdTransform.transformDataToAdmina(app), inputs);
-                }));
-                errors.forEach(error => {
-                    if (error instanceof Error) {
-                        throw new Error(error.message);
-                    }
-                });
-            }
-            catch (error) {
-                if (error instanceof Error) {
-                    throw new Error(error.message);
-                }
-                else {
-                    throw new Error(`Failed to register application data. :${error}`);
-                }
+            const { results, errors } = yield promise_pool_1.PromisePool.for(azureAdData)
+                .withConcurrency(2) // Limit the parallel processes to 2.
+                .process((app) => __awaiter(void 0, void 0, void 0, function* () {
+                yield AdminaDist.registerCustomService(yield AzureAdTransform.transformDataToAdmina(app), inputs);
+            }));
+            errors.forEach(error => {
+                console.log('Failed to register service', error);
+            });
+            if (errors.length > 0) {
+                throw new Error('Failed to register services.');
             }
             break;
         default:
@@ -456,12 +447,8 @@ class AzureAD {
                 };
             }
             catch (error) {
-                if (error instanceof Error) {
-                    throw new Error(`Failed to get access token: ${error.message}`);
-                }
-                else {
-                    throw new Error(`An unknown error occurred while getting access token: ${error}`);
-                }
+                console.log('Failed to get access token', error);
+                throw new Error(`An unknown error occurred while getting access token`);
             }
         });
     }
@@ -497,44 +484,39 @@ class AzureAD {
             };
             // PromisePoolで並列処理を実行
             let appInfos = [];
-            try {
-                const { results, errors } = yield promise_pool_1.PromisePool.for(apps.filter(isAppInfo)) // 型ガードでフィルタリング
-                    .withConcurrency(5) // 並列数を5に制限
-                    .process((app) => __awaiter(this, void 0, void 0, function* () {
-                    var _a, _b, _c;
-                    // Get the service principal id
-                    const servicePrincipalUrl = new URL('https://graph.microsoft.com/v1.0/servicePrincipals');
-                    servicePrincipalUrl.searchParams.set('$filter', `appId eq '${app.appId}'`);
-                    const servicePrincipalResponse = yield axios_1.default.get(servicePrincipalUrl.toString(), {
-                        headers: {
-                            Authorization: `Bearer ${accessToken}`
-                        }
-                    });
-                    const servicePrincipalId = (_a = servicePrincipalResponse.data.value[0]) === null || _a === void 0 ? void 0 : _a.id;
-                    const tags = (_c = (_b = servicePrincipalResponse.data.value[0]) === null || _b === void 0 ? void 0 : _b.tags) !== null && _c !== void 0 ? _c : [];
-                    const appInfo = {
-                        appId: app.appId,
-                        displayName: app.displayName,
-                        principleId: servicePrincipalId,
-                        signInAudience: app.signInAudience,
-                        identifierUris: app.identifierUris,
-                        tags: tags,
-                        users: []
-                    };
-                    return appInfo;
-                }));
-                errors.forEach(error => {
-                    if (error instanceof Error) {
-                        console.log(error);
-                        throw new Error(`Fail to get app info.[${serviceNames}]`);
+            const { results, errors } = yield promise_pool_1.PromisePool.for(apps.filter(isAppInfo)) // 型ガードでフィルタリング
+                .withConcurrency(5) // 並列数を5に制限
+                .process((app) => __awaiter(this, void 0, void 0, function* () {
+                var _a, _b, _c;
+                // Get the service principal id
+                const servicePrincipalUrl = new URL('https://graph.microsoft.com/v1.0/servicePrincipals');
+                servicePrincipalUrl.searchParams.set('$filter', `appId eq '${app.appId}'`);
+                const servicePrincipalResponse = yield axios_1.default.get(servicePrincipalUrl.toString(), {
+                    headers: {
+                        Authorization: `Bearer ${accessToken}`
                     }
                 });
-                appInfos = results;
-            }
-            catch (error) {
+                const servicePrincipalId = (_a = servicePrincipalResponse.data.value[0]) === null || _a === void 0 ? void 0 : _a.id;
+                const tags = (_c = (_b = servicePrincipalResponse.data.value[0]) === null || _b === void 0 ? void 0 : _b.tags) !== null && _c !== void 0 ? _c : [];
+                const appInfo = {
+                    appId: app.appId,
+                    displayName: app.displayName,
+                    principleId: servicePrincipalId,
+                    signInAudience: app.signInAudience,
+                    identifierUris: app.identifierUris,
+                    tags: tags,
+                    users: []
+                };
+                return appInfo;
+            }));
+            errors.forEach(error => {
                 console.log(error);
-                throw new Error(`Fail to fetch applications from AzureAd [${serviceNames}]`);
+                throw new Error(`Fail to get app info.[${serviceNames}]`);
+            });
+            if (errors.length > 0) {
+                throw new Error('Fail to get app info.');
             }
+            appInfos = results;
             // After the Promise.all is resolved, then filter the apps
             appInfos = appInfos.filter(appInfo => appInfo.tags &&
                 appInfo.tags.some(tag => tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
@@ -646,9 +628,11 @@ class AzureAD {
                 return yield this.getUserInfo(accessToken, principal_id);
             }));
             errors.forEach(error => {
-                console.log(error);
-                throw new Error('fail to get user info.');
+                console.log('Fail to get users', error);
             });
+            if (errors.length > 0) {
+                throw new Error('Fail to get users.');
+            }
             return results;
         });
     }
@@ -679,26 +663,27 @@ class AzureAD {
                             members: list
                         };
                     }));
+                    errors.forEach(error => {
+                        console.error('Error processing group', error);
+                    });
+                    if (errors.length > 0) {
+                        throw new Error('Fail to preload group members.');
+                    }
                     for (const result of results) {
                         this.groups.push(result);
                         console.log(`✔ Preloaded ${result.members.length} members to ${result.displayName} ... (ID:${result.principalId})`);
                     }
-                    errors.forEach(error => {
-                        if (error instanceof Error) {
-                            console.error(`Error processing group: ${error.message}`);
-                            throw new Error(error.message);
-                        }
-                    });
                     if (!response.data['@odata.nextLink']) {
                         console.log('🫖 Now Loading ... ' + this.groups.length + ' groups cached');
                         break;
                     }
                     url = new URL(response.data['@odata.nextLink']); // 次のページがある場合、URLを更新
+                    console.log('🫖 Now Loading ... ' + this.groups.length + ' groups cached');
                 }
             }
             catch (error) {
-                console.log(error);
-                throw new Error(`Fail to preload groups. `);
+                console.log('Fail to load group cache', error);
+                throw new Error(`Fail to preload groups. Please check the errors `);
             }
         });
     }
@@ -795,12 +780,8 @@ class AzureAD {
                     filteredResults = results.filter(appInfo => appInfo !== null);
                 }
                 catch (error) {
-                    if (error instanceof Error) {
-                        throw new Error(error.message);
-                    }
-                    else {
-                        throw new Error(`Failed to fetch list of applications. :${error}`);
-                    }
+                    console.log('Fail to fetch list of applications', error);
+                    throw new Error(`Failed to fetch list of applications.`);
                 }
                 if (!this.register_zero_user_app) {
                     console.log(`Filtering apps with zero users...`);
@@ -815,7 +796,8 @@ class AzureAD {
                 return filteredResults;
             }
             catch (error) {
-                throw new Error(`Error fetching SSO apps: ${error}`);
+                console.log('Error fetching SSO apps', error);
+                throw new Error(`Fail to fetch SSO apps`);
             }
         });
     }
@@ -861,7 +843,8 @@ function transformDataToAdmina(data) {
             return app;
         }
         catch (error) {
-            throw new Error(`Error in transformDataToAdmina ${error}`);
+            console.log('tansform data error:', error);
+            throw new Error(`Error in transformDataToAdmina`);
         }
     });
 }
