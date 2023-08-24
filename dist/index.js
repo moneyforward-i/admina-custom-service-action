@@ -99,28 +99,51 @@ class Admina {
             const newUsers = users.filter((user) => !accountEmails.includes(user.email));
             const deletedUsers = accountListResponse.data.items.filter((account) => !users.find((user) => user.email === account.email));
             console.log(`Register data into ${wsName}: existingUsers`, existingUsers.length, ', newUsers', newUsers.length, ', deleteAccounts', deletedUsers.length);
+            const CHUNK_SIZE = 200;
+            function chunkArray(array, chunkSize) {
+                const results = [];
+                while (array.length) {
+                    results.push(array.splice(0, chunkSize));
+                }
+                return results;
+            }
             // Register accounts
             const registerEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspace/${workspaceId}/accounts/custom`;
-            const requestData = {
-                create: newUsers.map(user => ({
-                    email: user.email,
-                    displayName: user.displayName,
-                    userName: user.displayName,
-                    roles: ['user']
-                })),
-                update: existingUsers.map(user => ({
-                    email: user.email,
-                    displayName: user.displayName,
-                    userName: user.displayName,
-                    roles: ['user']
-                })),
-                delete: deletedUsers.map(account => ({
-                    email: account.email,
-                    displayName: account.displayName
-                }))
-            };
             try {
-                yield axios_1.default.post(registerEndpoint, requestData, this.request_header);
+                // Create New Users
+                for (const chunk of chunkArray(newUsers, CHUNK_SIZE)) {
+                    const createData = {
+                        create: chunk.map(user => ({
+                            email: user.email,
+                            displayName: user.displayName,
+                            userName: user.displayName,
+                            roles: ['user']
+                        }))
+                    };
+                    yield axios_1.default.post(registerEndpoint, createData, this.request_header);
+                }
+                // Update Existing Users
+                for (const chunk of chunkArray(existingUsers, CHUNK_SIZE)) {
+                    const updateData = {
+                        update: chunk.map(user => ({
+                            email: user.email,
+                            displayName: user.displayName,
+                            userName: user.displayName,
+                            roles: ['user']
+                        }))
+                    };
+                    yield axios_1.default.post(registerEndpoint, updateData, this.request_header);
+                }
+                // Delete Users
+                for (const chunk of chunkArray(deletedUsers, CHUNK_SIZE)) {
+                    const deleteData = {
+                        delete: chunk.map(account => ({
+                            email: account.email,
+                            displayName: account.displayName
+                        }))
+                    };
+                    yield axios_1.default.post(registerEndpoint, deleteData, this.request_header);
+                }
             }
             catch (error) {
                 if (error && error.response) {
@@ -317,6 +340,7 @@ const AzureAdTransform = __importStar(__nccwpck_require__(8566));
 const AdminaDist = __importStar(__nccwpck_require__(9437));
 // Data
 const enum_1 = __nccwpck_require__(5857);
+const promise_pool_1 = __nccwpck_require__(8465);
 const Sync = (src, dist, inputs) => __awaiter(void 0, void 0, void 0, function* () {
     const destination = enum_1.Destination[dist];
     const source = enum_1.Source[src];
@@ -343,9 +367,18 @@ const syncToAdmina = (source, inputs) => __awaiter(void 0, void 0, void 0, funct
             console.log('Getting Azure AD data...');
             const azureAdData = yield AzureAdSource.fetchApps(inputs);
             console.log('Registering custom service...');
-            yield Promise.all(azureAdData.map((app) => __awaiter(void 0, void 0, void 0, function* () {
+            const { results, errors } = yield promise_pool_1.PromisePool
+                .for(azureAdData)
+                .withConcurrency(5) // 並列数を5に制限
+                .process((app) => __awaiter(void 0, void 0, void 0, function* () {
                 yield AdminaDist.registerCustomService(yield AzureAdTransform.transformDataToAdmina(app), inputs);
-            })));
+            }));
+            errors.forEach(error => {
+                console.error('Sync failed', error);
+            });
+            if (errors.length > 0) {
+                throw new Error("The syncing process couldn't finish completely, please check the errors");
+            }
             break;
         default:
             throw new Error(`Undeveloped source: ${source}`);
@@ -376,12 +409,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchApps = void 0;
 const axios_1 = __importDefault(__nccwpck_require__(8757));
 const env_1 = __nccwpck_require__(1342);
+const promise_pool_1 = __nccwpck_require__(8465);
 class AzureAD {
     constructor(inputs) {
         (0, env_1.checkEnv)(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], inputs);
         this.clientId = inputs['ms_client_id'];
         this.tenantId = inputs['ms_tenant_id'];
         this.clientSecret = inputs['ms_client_secret'];
+        this.register_zero_user_app = inputs['register_zero_user_app'] === 'true';
+        this.register_disabled_app = inputs['register_disabled_app'] === 'true';
+        this.target_services = inputs['target_services'] ? inputs['target_services'].split(',') : [];
     }
     getAccessToken() {
         return __awaiter(this, void 0, void 0, function* () {
@@ -410,41 +447,70 @@ class AzureAD {
             }
         });
     }
-    getEnterpriseApplications(accessToken, url = 'https://graph.microsoft.com/v1.0/applications') {
+    getEnterpriseApplications(accessToken, serviceNames = [], baseURL = 'https://graph.microsoft.com/v1.0/applications') {
         return __awaiter(this, void 0, void 0, function* () {
-            const response = yield axios_1.default.get(url, {
+            const filterQueries = serviceNames.map(name => `(displayName eq '${name}')`).join(' or ');
+            const url = new URL(baseURL);
+            if (filterQueries) {
+                url.searchParams.set('$filter', filterQueries);
+            }
+            const response = yield axios_1.default.get(url.toString(), {
                 headers: {
                     Authorization: `Bearer ${accessToken}`
                 }
             });
             const apps = response.data.value;
-            // Map each app to the AppInfo interface and get the corresponding service principal id
-            let appInfos = yield Promise.all(apps.map((app) => __awaiter(this, void 0, void 0, function* () {
-                var _a;
+            // AppInfo型として必要なプロパティを定義
+            const appInfoKeys = ['appId', 'displayName', 'signInAudience', 'identifierUris', 'tags'];
+            // 型ガード関数を定義
+            const isAppInfo = (obj) => {
+                return appInfoKeys.every(key => Object.prototype.hasOwnProperty.call(obj, key));
+            };
+            // PromisePoolで並列処理を実行
+            let appInfos = [];
+            const { results, errors } = yield promise_pool_1.PromisePool
+                .for(apps.filter(isAppInfo)) // 型ガードでフィルタリング
+                .withConcurrency(5) // 並列数を5に制限
+                .process((app) => __awaiter(this, void 0, void 0, function* () {
+                var _a, _b, _c;
                 // Get the service principal id
-                const servicePrincipalUrl = `https://graph.microsoft.com/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`;
-                const servicePrincipalResponse = yield axios_1.default.get(servicePrincipalUrl, {
+                const servicePrincipalUrl = new URL('https://graph.microsoft.com/v1.0/servicePrincipals');
+                servicePrincipalUrl.searchParams.set('$filter', `appId eq '${app.appId}'`);
+                const servicePrincipalResponse = yield axios_1.default.get(servicePrincipalUrl.toString(), {
                     headers: {
                         Authorization: `Bearer ${accessToken}`
                     }
                 });
                 const servicePrincipalId = (_a = servicePrincipalResponse.data.value[0]) === null || _a === void 0 ? void 0 : _a.id;
+                const tags = (_c = (_b = servicePrincipalResponse.data.value[0]) === null || _b === void 0 ? void 0 : _b.tags) !== null && _c !== void 0 ? _c : [];
                 const appInfo = {
                     appId: app.appId,
                     displayName: app.displayName,
                     principleId: servicePrincipalId,
-                    applicationTemplateId: app.applicationTemplateId,
+                    signInAudience: app.signInAudience,
                     identifierUris: app.identifierUris,
+                    tags: tags,
                     users: []
                 };
                 return appInfo;
-            })));
+            }));
+            errors.forEach(error => {
+                console.error('Fail to fetch application detals.', error);
+            });
+            if (errors.length > 0) {
+                throw new Error("Fail to fetch application details, please check the errors");
+            }
+            appInfos = results;
             // After the Promise.all is resolved, then filter the apps
-            appInfos = appInfos.filter(appInfo => appInfo.applicationTemplateId !== null);
+            appInfos = appInfos.filter(appInfo => appInfo.tags &&
+                appInfo.tags.some(tag => tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
+                    tag.startsWith('WindowsAzureActiveDirectoryGalleryApplication') ||
+                    tag === 'WindowsAzureActiveDirectoryCustomSingleSignOnApplication'));
             if (response.data['@odata.nextLink']) {
-                const nextApps = yield this.getEnterpriseApplications(accessToken, response.data['@odata.nextLink']);
+                const nextApps = yield this.getEnterpriseApplications(accessToken, serviceNames, response.data['@odata.nextLink']);
                 appInfos = appInfos.concat(nextApps);
             }
+            console.log(`Getting ${appInfos.length} apps ... and more.`);
             return appInfos;
         });
     }
@@ -459,21 +525,31 @@ class AzureAD {
             const user_principals = response.data.value
                 .filter((user) => user.principalId !== null)
                 .map((user) => user.principalId);
-            const userInfoPromises = user_principals.map((principal_id) => __awaiter(this, void 0, void 0, function* () {
+            // PromisePoolで並列処理を実行
+            let userInfos = [];
+            const { results, errors } = yield promise_pool_1.PromisePool
+                .for(user_principals)
+                .withConcurrency(5) // 並列数を5に制限
+                .process((principal_id) => __awaiter(this, void 0, void 0, function* () {
                 const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`;
                 const userResponse = yield axios_1.default.get(userUrl, {
                     headers: {
                         Authorization: `Bearer ${accessToken}`
                     }
                 });
-                const userInfo = {
+                return {
                     email: userResponse.data.userPrincipalName,
                     displayName: userResponse.data.displayName,
                     principalId: principal_id
                 };
-                return userInfo;
             }));
-            let userInfos = yield Promise.all(userInfoPromises);
+            userInfos = results;
+            errors.forEach(error => {
+                console.error('Fail to fetch user detals.', error);
+            });
+            if (errors.length > 0) {
+                throw new Error("Fail to fetch user details, please check the errors");
+            }
             if (response.data['@odata.nextLink']) {
                 const nextUsers = yield this.getUsers(accessToken, response.data['@odata.nextLink']);
                 userInfos = userInfos.concat(nextUsers);
@@ -481,7 +557,7 @@ class AzureAD {
             return userInfos;
         });
     }
-    getAppAssignedUsers(accessToken, app) {
+    getAppInfos(accessToken, app) {
         return __awaiter(this, void 0, void 0, function* () {
             const url = `https://graph.microsoft.com/v1.0/servicePrincipals/${app.principleId}/appRoleAssignedTo`;
             const usersInfo = yield this.getUsers(accessToken, url);
@@ -489,8 +565,9 @@ class AzureAD {
                 appId: app.appId,
                 displayName: app.displayName,
                 principleId: app.principleId,
-                applicationTemplateId: app.applicationTemplateId,
+                signInAudience: app.signInAudience,
                 identifierUris: app.identifierUris,
+                tags: app.tags,
                 users: usersInfo
             };
             console.log(`Detected ${usersInfo.length} users in ${app.displayName}`);
@@ -501,13 +578,33 @@ class AzureAD {
         return __awaiter(this, void 0, void 0, function* () {
             try {
                 const accessToken = yield this.getAccessToken();
-                const enterpriseApplications = yield this.getEnterpriseApplications(accessToken);
-                const dataPromises = enterpriseApplications.map(appInfo => this.getAppAssignedUsers(accessToken, appInfo).catch(err => {
-                    console.error(`Failed to get assigned users for app ${appInfo.id}: ${err}`);
-                    return null;
+                const enterpriseApplications = yield this.getEnterpriseApplications(accessToken, this.target_services);
+                console.log(`Detected ${enterpriseApplications.length} SSO apps`);
+                let filteredResults = [];
+                const { results, errors } = yield promise_pool_1.PromisePool
+                    .for(enterpriseApplications)
+                    .withConcurrency(5) // 並列数を5に制限
+                    .process(appInfo => this.getAppInfos(accessToken, appInfo).catch(err => {
+                    throw new Error(`Failed to get assigned users for app ${appInfo.appId}: ${err}`);
                 }));
-                const data = yield Promise.all(dataPromises);
-                return data.filter(appInfo => appInfo !== null);
+                errors.forEach(error => {
+                    console.error('Fail to fetch applications.', error);
+                });
+                if (errors.length > 0) {
+                    throw new Error("Fail to fetch applications, please check the errors");
+                }
+                filteredResults = results.filter(appInfo => appInfo !== null);
+                if (!this.register_zero_user_app) {
+                    console.log(`Filtering apps with zero users...`);
+                    filteredResults = filteredResults.filter(appInfo => appInfo.users.length > 0);
+                    console.log(`The number after applying the filter is ${filteredResults.length}`);
+                }
+                if (!this.register_disabled_app) {
+                    console.log(`Filtering disabled apps...`);
+                    filteredResults = filteredResults.filter(appInfo => !appInfo.tags.includes('HideApp'));
+                    console.log(`The number after applying the filter is ${filteredResults.length}`);
+                }
+                return filteredResults;
             }
             catch (error) {
                 throw new Error(`Error fetching SSO apps: ${error}`);
@@ -2377,6 +2474,886 @@ function isLoopbackAddress(host) {
         hostLower.startsWith('[0:0:0:0:0:0:0:1]'));
 }
 //# sourceMappingURL=proxy.js.map
+
+/***/ }),
+
+/***/ 2670:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+
+
+/***/ }),
+
+/***/ 8465:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __exportStar = (this && this.__exportStar) || function(m, exports) {
+    for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+const promise_pool_1 = __nccwpck_require__(8941);
+exports["default"] = promise_pool_1.PromisePool;
+__exportStar(__nccwpck_require__(2670), exports);
+__exportStar(__nccwpck_require__(8941), exports);
+__exportStar(__nccwpck_require__(1705), exports);
+__exportStar(__nccwpck_require__(7172), exports);
+__exportStar(__nccwpck_require__(4983), exports);
+__exportStar(__nccwpck_require__(9657), exports);
+
+
+/***/ }),
+
+/***/ 1705:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PromisePoolError = void 0;
+class PromisePoolError extends Error {
+    /**
+     * Create a new instance for the given `message` and `item`.
+     *
+     * @param error  The original error
+     * @param item   The item causing the error
+     */
+    constructor(error, item) {
+        super();
+        this.raw = error;
+        this.item = item;
+        this.name = this.constructor.name;
+        this.message = this.messageFrom(error);
+        if (Error.captureStackTrace && typeof Error.captureStackTrace === 'function') {
+            Error.captureStackTrace(this, this.constructor);
+        }
+    }
+    /**
+     * Returns a new promise pool error instance wrapping the `error` and `item`.
+     *
+     * @param {*} error
+     * @param {*} item
+     *
+     * @returns {PromisePoolError}
+     */
+    static createFrom(error, item) {
+        return new this(error, item);
+    }
+    /**
+     * Returns the error message from the given `error`.
+     *
+     * @param {*} error
+     *
+     * @returns {String}
+     */
+    messageFrom(error) {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        if (typeof error === 'object') {
+            return error.message;
+        }
+        if (typeof error === 'string' || typeof error === 'number') {
+            return error.toString();
+        }
+        return '';
+    }
+}
+exports.PromisePoolError = PromisePoolError;
+
+
+/***/ }),
+
+/***/ 6331:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PromisePoolExecutor = void 0;
+const promise_pool_1 = __nccwpck_require__(8941);
+const promise_pool_error_1 = __nccwpck_require__(1705);
+const stop_the_promise_pool_error_1 = __nccwpck_require__(4983);
+const validation_error_1 = __nccwpck_require__(9657);
+class PromisePoolExecutor {
+    /**
+     * Creates a new promise pool executer instance with a default concurrency of 10.
+     */
+    constructor() {
+        this.meta = {
+            tasks: [],
+            items: [],
+            errors: [],
+            results: [],
+            stopped: false,
+            concurrency: 10,
+            shouldResultsCorrespond: false,
+            processedItems: [],
+            taskTimeout: 0
+        };
+        this.handler = () => { };
+        this.errorHandler = undefined;
+        this.onTaskStartedHandlers = [];
+        this.onTaskFinishedHandlers = [];
+    }
+    /**
+     * Set the number of tasks to process concurrently the promise pool.
+     *
+     * @param {Integer} concurrency
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    useConcurrency(concurrency) {
+        if (!this.isValidConcurrency(concurrency)) {
+            throw validation_error_1.ValidationError.createFrom(`"concurrency" must be a number, 1 or up. Received "${concurrency}" (${typeof concurrency})`);
+        }
+        this.meta.concurrency = concurrency;
+        return this;
+    }
+    /**
+     * Determine whether the given `concurrency` value is valid.
+     *
+     * @param {Number} concurrency
+     *
+     * @returns {Boolean}
+     */
+    isValidConcurrency(concurrency) {
+        return typeof concurrency === 'number' && concurrency >= 1;
+    }
+    /**
+     * Set the timeout in ms for the pool handler
+     *
+     * @param {Number} timeout
+     *
+     * @returns {PromisePool}
+     */
+    withTaskTimeout(timeout) {
+        this.meta.taskTimeout = timeout;
+        return this;
+    }
+    /**
+     * Returns the number of concurrently processed tasks.
+     *
+     * @returns {Number}
+     */
+    concurrency() {
+        return this.meta.concurrency;
+    }
+    /**
+     * Assign whether to keep corresponding results between source items and resulting tasks.
+     */
+    useCorrespondingResults(shouldResultsCorrespond) {
+        this.meta.shouldResultsCorrespond = shouldResultsCorrespond;
+        return this;
+    }
+    /**
+     * Determine whether to keep corresponding results between source items and resulting tasks.
+     */
+    shouldUseCorrespondingResults() {
+        return this.meta.shouldResultsCorrespond;
+    }
+    /**
+     * Returns the task timeout in milliseconds.
+     */
+    taskTimeout() {
+        return this.meta.taskTimeout;
+    }
+    /**
+     * Set the items to be processed in the promise pool.
+     *
+     * @param {Array} items
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    for(items) {
+        this.meta.items = items;
+        return this;
+    }
+    /**
+     * Returns the list of items to process.
+     *
+     * @returns {T[] | Iterable<T> | AsyncIterable<T>}
+     */
+    items() {
+        return this.meta.items;
+    }
+    /**
+     * Returns the number of items to process, or `NaN` if items are not an array.
+     *
+     * @returns {Number}
+     */
+    itemsCount() {
+        const items = this.items();
+        return Array.isArray(items) ? items.length : NaN;
+    }
+    /**
+     * Returns the list of active tasks.
+     *
+     * @returns {Array}
+     */
+    tasks() {
+        return this.meta.tasks;
+    }
+    /**
+     * Returns the number of currently active tasks.
+     *
+     * @returns {Number}
+     *
+     * @deprecated use the `activeTasksCount()` method (plural naming) instead
+     */
+    activeTaskCount() {
+        return this.activeTasksCount();
+    }
+    /**
+     * Returns the number of currently active tasks.
+     *
+     * @returns {Number}
+     */
+    activeTasksCount() {
+        return this.tasks().length;
+    }
+    /**
+     * Returns the list of processed items.
+     *
+     * @returns {T[]}
+     */
+    processedItems() {
+        return this.meta.processedItems;
+    }
+    /**
+     * Returns the number of processed items.
+     *
+     * @returns {Number}
+     */
+    processedCount() {
+        return this.processedItems().length;
+    }
+    /**
+     * Returns the percentage progress of items that have been processed, or `NaN` if items is not an array.
+     */
+    processedPercentage() {
+        return (this.processedCount() / this.itemsCount()) * 100;
+    }
+    /**
+     * Returns the list of results.
+     *
+     * @returns {R[]}
+     */
+    results() {
+        return this.meta.results;
+    }
+    /**
+     * Returns the list of errors.
+     *
+     * @returns {Array<PromisePoolError<T>>}
+     */
+    errors() {
+        return this.meta.errors;
+    }
+    /**
+     * Set the handler that is applied to each item.
+     *
+     * @param {Function} action
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    withHandler(action) {
+        this.handler = action;
+        return this;
+    }
+    /**
+     * Determine whether a custom error handle is available.
+     *
+     * @returns {Boolean}
+     */
+    hasErrorHandler() {
+        return !!this.errorHandler;
+    }
+    /**
+     * Set the error handler function to execute when an error occurs.
+     *
+     * @param {Function} errorHandler
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    handleError(handler) {
+        this.errorHandler = handler;
+        return this;
+    }
+    /**
+     * Set the handler function to execute when started a task.
+     *
+     * @param {Function} handler
+     *
+     * @returns {this}
+     */
+    onTaskStarted(handlers) {
+        this.onTaskStartedHandlers = handlers;
+        return this;
+    }
+    /**
+      * Assign the given callback `handler` function to run when a task finished.
+     *
+     * @param {OnProgressCallback<T>} handlers
+     *
+     * @returns {this}
+     */
+    onTaskFinished(handlers) {
+        this.onTaskFinishedHandlers = handlers;
+        return this;
+    }
+    /**
+     * Determines whether the number of active tasks is greater or equal to the concurrency limit.
+     *
+     * @returns {Boolean}
+     */
+    hasReachedConcurrencyLimit() {
+        return this.activeTasksCount() >= this.concurrency();
+    }
+    /**
+     * Stop a promise pool processing.
+     */
+    stop() {
+        this.markAsStopped();
+        throw new stop_the_promise_pool_error_1.StopThePromisePoolError();
+    }
+    /**
+     * Mark the promise pool as stopped.
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    markAsStopped() {
+        this.meta.stopped = true;
+        return this;
+    }
+    /**
+     * Determine whether the pool is stopped.
+     *
+     * @returns {Boolean}
+     */
+    isStopped() {
+        return this.meta.stopped;
+    }
+    /**
+     * Start processing the promise pool.
+     *
+     * @returns {ReturnValue}
+     */
+    async start() {
+        return await this
+            .validateInputs()
+            .prepareResultsArray()
+            .process();
+    }
+    /**
+     * Determine whether the pool should stop.
+     *
+     * @returns {PromisePoolExecutor}
+     *
+     * @throws
+     */
+    validateInputs() {
+        if (typeof this.handler !== 'function') {
+            throw validation_error_1.ValidationError.createFrom('The first parameter for the .process(fn) method must be a function');
+        }
+        const timeout = this.taskTimeout();
+        if (!(timeout == null || (typeof timeout === 'number' && timeout >= 0))) {
+            throw validation_error_1.ValidationError.createFrom(`"timeout" must be undefined or a number. A number must be 0 or up. Received "${String(timeout)}" (${typeof timeout})`);
+        }
+        if (!this.areItemsValid()) {
+            throw validation_error_1.ValidationError.createFrom(`"items" must be an array, an iterable or an async iterable. Received "${typeof this.items()}"`);
+        }
+        if (this.errorHandler && typeof this.errorHandler !== 'function') {
+            throw validation_error_1.ValidationError.createFrom(`The error handler must be a function. Received "${typeof this.errorHandler}"`);
+        }
+        this.onTaskStartedHandlers.forEach(handler => {
+            if (handler && typeof handler !== 'function') {
+                throw validation_error_1.ValidationError.createFrom(`The onTaskStarted handler must be a function. Received "${typeof handler}"`);
+            }
+        });
+        this.onTaskFinishedHandlers.forEach(handler => {
+            if (handler && typeof handler !== 'function') {
+                throw validation_error_1.ValidationError.createFrom(`The error handler must be a function. Received "${typeof handler}"`);
+            }
+        });
+        return this;
+    }
+    areItemsValid() {
+        const items = this.items();
+        if (Array.isArray(items))
+            return true;
+        if (typeof items[Symbol.iterator] === 'function')
+            return true;
+        if (typeof items[Symbol.asyncIterator] === 'function')
+            return true;
+        return false;
+    }
+    /**
+     * Prefill the results array with `notRun` symbol values if results should correspond.
+     */
+    prepareResultsArray() {
+        const items = this.items();
+        if (!Array.isArray(items))
+            return this;
+        if (!this.shouldUseCorrespondingResults())
+            return this;
+        this.meta.results = Array(items.length).fill(promise_pool_1.PromisePool.notRun);
+        return this;
+    }
+    /**
+     * Starts processing the promise pool by iterating over the items
+     * and running each item through the async `callback` function.
+     *
+     * @param {Function} callback
+     *
+     * @returns {Promise}
+     */
+    async process() {
+        let index = 0;
+        for await (const item of this.items()) {
+            if (this.isStopped()) {
+                break;
+            }
+            if (this.shouldUseCorrespondingResults()) {
+                this.results()[index] = promise_pool_1.PromisePool.notRun;
+            }
+            this.startProcessing(item, index);
+            index += 1;
+            // don't consume the next item from iterable
+            // until there's a free slot for a new task
+            await this.waitForProcessingSlot();
+        }
+        return await this.drained();
+    }
+    /**
+     * Wait for one of the active tasks to finish processing.
+     */
+    async waitForProcessingSlot() {
+        /**
+         * We’re using a while loop here because it’s possible to decrease the pool’s
+         * concurrency at runtime. We need to wait for as many tasks as needed to
+         * finish processing before moving on to process the remaining tasks.
+         */
+        while (this.hasReachedConcurrencyLimit()) {
+            await this.waitForActiveTaskToFinish();
+        }
+    }
+    /**
+     * Wait for the next, currently active task to finish processing.
+     */
+    async waitForActiveTaskToFinish() {
+        await Promise.race(this.tasks());
+    }
+    /**
+     * Create a processing function for the given `item`.
+     *
+     * @param {T} item
+     * @param {number} index
+     */
+    startProcessing(item, index) {
+        const task = this.createTaskFor(item, index)
+            .then(result => {
+            this.save(result, index).removeActive(task);
+        })
+            .catch(async (error) => {
+            await this.handleErrorFor(error, item, index);
+            this.removeActive(task);
+        })
+            .finally(() => {
+            this.processedItems().push(item);
+            this.runOnTaskFinishedHandlers(item);
+        });
+        this.tasks().push(task);
+        this.runOnTaskStartedHandlers(item);
+    }
+    /**
+     * Ensures a returned promise for the processing of the given `item`.
+     *
+     * @param {T} item
+     * @param {number} index
+     *
+     * @returns {*}
+     */
+    async createTaskFor(item, index) {
+        if (this.taskTimeout() === undefined) {
+            return this.handler(item, index, this);
+        }
+        return Promise.race([
+            this.handler(item, index, this),
+            this.createTaskTimeout(item)
+        ]);
+    }
+    /**
+     * Returns a promise that times-out after the configured task timeout.
+     */
+    async createTaskTimeout(item) {
+        return new Promise((_resolve, reject) => {
+            setTimeout(() => {
+                reject(new promise_pool_error_1.PromisePoolError(`Promise in pool timed out after ${this.taskTimeout()}ms`, item));
+            }, this.taskTimeout());
+        });
+    }
+    /**
+     * Save the given calculation `result`, possibly at the provided `position`.
+     *
+     * @param {*} result
+     * @param {number} position
+     *
+     * @returns {PromisePoolExecutor}
+     */
+    save(result, position) {
+        this.shouldUseCorrespondingResults()
+            ? this.results()[position] = result
+            : this.results().push(result);
+        return this;
+    }
+    /**
+     * Remove the given `task` from the list of active tasks.
+     *
+     * @param {Promise} task
+     */
+    removeActive(task) {
+        this.tasks().splice(this.tasks().indexOf(task), 1);
+        return this;
+    }
+    /**
+     * Create and save an error for the the given `item`.
+     *
+     * @param {Error} error
+     * @param {T} item
+     * @param {number} index
+     */
+    async handleErrorFor(error, item, index) {
+        if (this.shouldUseCorrespondingResults()) {
+            this.results()[index] = promise_pool_1.PromisePool.failed;
+        }
+        if (this.isStoppingThePoolError(error)) {
+            return;
+        }
+        if (this.isValidationError(error)) {
+            this.markAsStopped();
+            throw error;
+        }
+        this.hasErrorHandler()
+            ? await this.runErrorHandlerFor(error, item)
+            : this.saveErrorFor(error, item);
+    }
+    /**
+     * Determine whether the given `error` is a `StopThePromisePoolError` instance.
+     *
+     * @param {Error} error
+     *
+     * @returns {Boolean}
+     */
+    isStoppingThePoolError(error) {
+        return error instanceof stop_the_promise_pool_error_1.StopThePromisePoolError;
+    }
+    /**
+     * Determine whether the given `error` is a `ValidationError` instance.
+     *
+     * @param {Error} error
+     *
+     * @returns {Boolean}
+     */
+    isValidationError(error) {
+        return error instanceof validation_error_1.ValidationError;
+    }
+    /**
+     * Run the user’s error handler, if available.
+     *
+     * @param {Error} processingError
+     * @param {T} item
+     */
+    async runErrorHandlerFor(processingError, item) {
+        try {
+            await this.errorHandler?.(processingError, item, this);
+        }
+        catch (error) {
+            this.rethrowIfNotStoppingThePool(error);
+        }
+    }
+    /**
+     * Run the onTaskStarted handlers.
+     */
+    runOnTaskStartedHandlers(item) {
+        this.onTaskStartedHandlers.forEach(handler => {
+            handler(item, this);
+        });
+    }
+    /**
+     * Run the onTaskFinished handlers.
+     */
+    runOnTaskFinishedHandlers(item) {
+        this.onTaskFinishedHandlers.forEach(handler => {
+            handler(item, this);
+        });
+    }
+    /**
+     * Rethrow the given `error` if it’s not an instance of `StopThePromisePoolError`.
+     *
+     * @param {Error} error
+     */
+    rethrowIfNotStoppingThePool(error) {
+        if (this.isStoppingThePoolError(error)) {
+            return;
+        }
+        throw error;
+    }
+    /**
+     * Create and save an error for the the given `item`.
+     *
+     * @param {T} item
+     */
+    saveErrorFor(error, item) {
+        this.errors().push(promise_pool_error_1.PromisePoolError.createFrom(error, item));
+    }
+    /**
+     * Wait for all active tasks to finish. Once all the tasks finished
+     * processing, returns an object containing the results and errors.
+     *
+     * @returns {Object}
+     */
+    async drained() {
+        await this.drainActiveTasks();
+        return {
+            errors: this.errors(),
+            results: this.results()
+        };
+    }
+    /**
+     * Wait for all of the active tasks to finish processing.
+     */
+    async drainActiveTasks() {
+        await Promise.all(this.tasks());
+    }
+}
+exports.PromisePoolExecutor = PromisePoolExecutor;
+
+
+/***/ }),
+
+/***/ 8941:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PromisePool = void 0;
+const promise_pool_executor_1 = __nccwpck_require__(6331);
+class PromisePool {
+    /**
+     * Instantiates a new promise pool with a default `concurrency: 10` and `items: []`.
+     *
+     * @param {Object} options
+     */
+    constructor(items) {
+        this.timeout = undefined;
+        this.concurrency = 10;
+        this.shouldResultsCorrespond = false;
+        this.items = items ?? [];
+        this.errorHandler = undefined;
+        this.onTaskStartedHandlers = [];
+        this.onTaskFinishedHandlers = [];
+    }
+    /**
+     * Set the number of tasks to process concurrently in the promise pool.
+     *
+     * @param {Integer} concurrency
+     *
+     * @returns {PromisePool}
+     */
+    withConcurrency(concurrency) {
+        this.concurrency = concurrency;
+        return this;
+    }
+    /**
+     * Set the number of tasks to process concurrently in the promise pool.
+     *
+     * @param {Number} concurrency
+     *
+     * @returns {PromisePool}
+     */
+    static withConcurrency(concurrency) {
+        return new this().withConcurrency(concurrency);
+    }
+    /**
+     * Set the timeout in milliseconds for the pool handler.
+     *
+     * @param {Number} timeout
+     *
+     * @returns {PromisePool}
+     */
+    withTaskTimeout(timeout) {
+        this.timeout = timeout;
+        return this;
+    }
+    /**
+     * Set the timeout in milliseconds for the pool handler.
+     *
+     * @param {Number} timeout
+     *
+     * @returns {PromisePool}
+     */
+    static withTaskTimeout(timeout) {
+        return new this().withTaskTimeout(timeout);
+    }
+    /**
+     * Set the items to be processed in the promise pool.
+     *
+     * @param {T[] | Iterable<T> | AsyncIterable<T>} items
+     *
+     * @returns {PromisePool}
+     */
+    for(items) {
+        return typeof this.timeout === 'number'
+            ? new PromisePool(items).withConcurrency(this.concurrency).withTaskTimeout(this.timeout)
+            : new PromisePool(items).withConcurrency(this.concurrency);
+    }
+    /**
+     * Set the items to be processed in the promise pool.
+     *
+     * @param {T[] | Iterable<T> | AsyncIterable<T>} items
+     *
+     * @returns {PromisePool}
+     */
+    static for(items) {
+        return new this().for(items);
+    }
+    /**
+     * Set the error handler function to execute when an error occurs.
+     *
+     * @param {ErrorHandler<T>} handler
+     *
+     * @returns {PromisePool}
+     */
+    handleError(handler) {
+        this.errorHandler = handler;
+        return this;
+    }
+    /**
+     * Assign the given callback `handler` function to run when a task starts.
+     *
+     * @param {OnProgressCallback<T>} handler
+     *
+     * @returns {PromisePool}
+     */
+    onTaskStarted(handler) {
+        this.onTaskStartedHandlers.push(handler);
+        return this;
+    }
+    /**
+     * Assign the given callback `handler` function to run when a task finished.
+     *
+     * @param {OnProgressCallback<T>} handler
+     *
+     * @returns {PromisePool}
+     */
+    onTaskFinished(handler) {
+        this.onTaskFinishedHandlers.push(handler);
+        return this;
+    }
+    /**
+     * Assign whether to keep corresponding results between source items and resulting tasks.
+     */
+    useCorrespondingResults() {
+        this.shouldResultsCorrespond = true;
+        return this;
+    }
+    /**
+     * Starts processing the promise pool by iterating over the items
+     * and running each item through the async `callback` function.
+     *
+     * @param {ProcessHandler} The async processing function receiving each item from the `items` array.
+     *
+     * @returns Promise<{ results, errors }>
+     */
+    async process(callback) {
+        return new promise_pool_executor_1.PromisePoolExecutor()
+            .useConcurrency(this.concurrency)
+            .useCorrespondingResults(this.shouldResultsCorrespond)
+            .withTaskTimeout(this.timeout)
+            .withHandler(callback)
+            .handleError(this.errorHandler)
+            .onTaskStarted(this.onTaskStartedHandlers)
+            .onTaskFinished(this.onTaskFinishedHandlers)
+            .for(this.items)
+            .start();
+    }
+}
+exports.PromisePool = PromisePool;
+PromisePool.notRun = Symbol('notRun');
+PromisePool.failed = Symbol('failed');
+
+
+/***/ }),
+
+/***/ 7172:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+
+
+/***/ }),
+
+/***/ 4983:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.StopThePromisePoolError = void 0;
+class StopThePromisePoolError extends Error {
+}
+exports.StopThePromisePoolError = StopThePromisePoolError;
+
+
+/***/ }),
+
+/***/ 9657:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ValidationError = void 0;
+class ValidationError extends Error {
+    /**
+     * Create a new instance for the given `message`.
+     *
+     * @param message  The error message
+     */
+    constructor(message) {
+        super(message);
+        if (Error.captureStackTrace && typeof Error.captureStackTrace === 'function') {
+            Error.captureStackTrace(this, this.constructor);
+        }
+    }
+    /**
+     * Returns a validation error with the given `message`.
+     */
+    static createFrom(message) {
+        return new this(message);
+    }
+}
+exports.ValidationError = ValidationError;
+
 
 /***/ }),
 

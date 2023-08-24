@@ -1,6 +1,6 @@
 import axios from 'axios'
-import { checkEnv } from '../util/env'
-import { PromisePool } from '@supercharge/promise-pool'
+import {checkEnv} from '../util/env'
+import {PromisePool} from '@supercharge/promise-pool'
 
 export interface AppInfo {
   appId: string
@@ -33,7 +33,9 @@ class AzureAD {
     this.clientSecret = inputs['ms_client_secret']
     this.register_zero_user_app = inputs['register_zero_user_app'] === 'true'
     this.register_disabled_app = inputs['register_disabled_app'] === 'true'
-    this.target_services = inputs['target_services'] ? inputs['target_services'].split(',') : [];
+    this.target_services = inputs['target_services']
+      ? inputs['target_services'].split(',')
+      : []
   }
 
   private async getAccessToken() {
@@ -69,10 +71,12 @@ class AzureAD {
     serviceNames: string[] = [],
     baseURL = 'https://graph.microsoft.com/v1.0/applications'
   ): Promise<AppInfo[]> {
-    const filterQueries = serviceNames.map(name => `(displayName eq '${name}')`).join(' or ');
-    const url = new URL(baseURL);
+    const filterQueries = serviceNames
+      .map(name => `(displayName eq '${name}')`)
+      .join(' or ')
+    const url = new URL(baseURL)
     if (filterQueries) {
-      url.searchParams.set('$filter', filterQueries);
+      url.searchParams.set('$filter', filterQueries)
     }
     const response = await axios.get(url.toString(), {
       headers: {
@@ -82,62 +86,79 @@ class AzureAD {
     const apps = response.data.value
 
     // AppInfo型として必要なプロパティを定義
-    const appInfoKeys = ['appId', 'displayName', 'signInAudience', 'identifierUris', 'tags'] as const
+    const appInfoKeys = [
+      'appId',
+      'displayName',
+      'signInAudience',
+      'identifierUris',
+      'tags'
+    ] as const
 
     // 型ガード関数を定義
     const isAppInfo = (obj: unknown): obj is AppInfo => {
-      return appInfoKeys.every(key => Object.prototype.hasOwnProperty.call(obj, key))
+      return appInfoKeys.every(key =>
+        Object.prototype.hasOwnProperty.call(obj, key)
+      )
     }
     // PromisePoolで並列処理を実行
     let appInfos = [] as AppInfo[]
-    try {
-      const { results, errors } = await PromisePool
-        .for<AppInfo>(apps.filter(isAppInfo)) // 型ガードでフィルタリング
-        .withConcurrency(5) // 並列数を5に制限
-        .process(async (app: AppInfo) => {
-          // Get the service principal id
-          const servicePrincipalUrl = new URL('https://graph.microsoft.com/v1.0/servicePrincipals');
-          servicePrincipalUrl.searchParams.set('$filter', `appId eq '${app.appId}'`)
-          const servicePrincipalResponse = await axios.get(servicePrincipalUrl.toString(), {
+    const {results, errors} = await PromisePool.for<AppInfo>(
+      apps.filter(isAppInfo)
+    ) // 型ガードでフィルタリング
+      .withConcurrency(5) // 並列数を5に制限
+      .process(async (app: AppInfo) => {
+        // Get the service principal id
+        const servicePrincipalUrl = new URL(
+          'https://graph.microsoft.com/v1.0/servicePrincipals'
+        )
+        servicePrincipalUrl.searchParams.set(
+          '$filter',
+          `appId eq '${app.appId}'`
+        )
+        const servicePrincipalResponse = await axios.get(
+          servicePrincipalUrl.toString(),
+          {
             headers: {
               Authorization: `Bearer ${accessToken}`
             }
-          })
-          const servicePrincipalId = servicePrincipalResponse.data.value[0]?.id
-          const tags: string[] = servicePrincipalResponse.data.value[0]?.tags ?? []
-          const appInfo: AppInfo = {
-            appId: app.appId,
-            displayName: app.displayName,
-            principleId: servicePrincipalId,
-            signInAudience: app.signInAudience,
-            identifierUris: app.identifierUris,
-            tags: tags,
-            users: []
           }
-          return appInfo
-        })
-      errors.forEach(error => {
-        if (error instanceof Error) {
-          throw new Error(error.message);
+        )
+        const servicePrincipalId = servicePrincipalResponse.data.value[0]?.id
+        const tags: string[] =
+          servicePrincipalResponse.data.value[0]?.tags ?? []
+        const appInfo: AppInfo = {
+          appId: app.appId,
+          displayName: app.displayName,
+          principleId: servicePrincipalId,
+          signInAudience: app.signInAudience,
+          identifierUris: app.identifierUris,
+          tags: tags,
+          users: []
         }
+        return appInfo
       })
-      appInfos = results
-    } catch (error) {
-      throw new Error(`Fail to fetch applications from AzureAd: ${error}`);
+
+    errors.forEach(error => {
+      console.error('Fail to fetch application detals.', error)
+    })
+    if (errors.length > 0) {
+      throw new Error(
+        'Fail to fetch application details, please check the errors'
+      )
     }
+    appInfos = results
 
     // After the Promise.all is resolved, then filter the apps
     appInfos = appInfos.filter(
       appInfo =>
         appInfo.tags &&
-        appInfo.tags.some(tag =>
-          tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
-          tag.startsWith('WindowsAzureActiveDirectoryGalleryApplication') ||
-          tag === 'WindowsAzureActiveDirectoryCustomSingleSignOnApplication'
+        appInfo.tags.some(
+          tag =>
+            tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
+            tag.startsWith('WindowsAzureActiveDirectoryGalleryApplication') ||
+            tag === 'WindowsAzureActiveDirectoryCustomSingleSignOnApplication'
         )
     )
-
-
     if (response.data['@odata.nextLink']) {
       const nextApps = await this.getEnterpriseApplications(
         accessToken,
@@ -166,31 +187,27 @@ class AzureAD {
 
     // PromisePoolで並列処理を実行
     let userInfos = [] as UserInfo[]
-    try {
-      const { results, errors } = await PromisePool
-        .for(user_principals)
-        .withConcurrency(5) // 並列数を5に制限
-        .process(async (principal_id: string) => {
-          const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
-          const userResponse = await axios.get(userUrl, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`
-            }
-          })
-          return {
-            email: userResponse.data.userPrincipalName,
-            displayName: userResponse.data.displayName,
-            principalId: principal_id
-          } as UserInfo
+    const {results, errors} = await PromisePool.for(user_principals)
+      .withConcurrency(5) // 並列数を5に制限
+      .process(async (principal_id: string) => {
+        const userUrl = `https://graph.microsoft.com/v1.0/users/${principal_id}`
+        const userResponse = await axios.get(userUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
+          }
         })
-      userInfos = results
-
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(error.message);
-      } else {
-        throw new Error(`Failed to register application data. :${error}`);
-      }
+        return {
+          email: userResponse.data.userPrincipalName,
+          displayName: userResponse.data.displayName,
+          principalId: principal_id
+        } as UserInfo
+      })
+    userInfos = results
+    errors.forEach(error => {
+      console.error('Fail to fetch user detals.', error)
+    })
+    if (errors.length > 0) {
+      throw new Error('Fail to fetch user details, please check the errors')
     }
 
     if (response.data['@odata.nextLink']) {
@@ -236,37 +253,42 @@ class AzureAD {
       console.log(`Detected ${enterpriseApplications.length} SSO apps`)
       let filteredResults = [] as AppInfo[]
 
-      try {
-        const { results, errors } = await PromisePool
-          .for(enterpriseApplications)
-          .withConcurrency(5) // 並列数を5に制限
-          .process(appInfo =>
-            this.getAppInfos(accessToken, appInfo).catch(err => {
-              throw new Error(`Failed to get assigned users for app ${appInfo.appId}: ${err}`)
-            })
-          )
-        errors.forEach(error => {
-          throw new Error(error.message);
-        })
-        filteredResults = results.filter(appInfo => appInfo !== null) as AppInfo[]
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(error.message);
-        } else {
-          throw new Error(`Failed to fetch list of applications. :${error}`);
-        }
+      const {results, errors} = await PromisePool.for(enterpriseApplications)
+        .withConcurrency(5) // 並列数を5に制限
+        .process(appInfo =>
+          this.getAppInfos(accessToken, appInfo).catch(err => {
+            throw new Error(
+              `Failed to get assigned users for app ${appInfo.appId}: ${err}`
+            )
+          })
+        )
+      errors.forEach(error => {
+        console.error('Fail to fetch applications.', error)
+      })
+      if (errors.length > 0) {
+        throw new Error('Fail to fetch applications, please check the errors')
       }
+
+      filteredResults = results.filter(appInfo => appInfo !== null) as AppInfo[]
 
       if (!this.register_zero_user_app) {
         console.log(`Filtering apps with zero users...`)
-        filteredResults = filteredResults.filter(appInfo => appInfo.users.length > 0)
-        console.log(`The number after applying the filter is ${filteredResults.length}`)
+        filteredResults = filteredResults.filter(
+          appInfo => appInfo.users.length > 0
+        )
+        console.log(
+          `The number after applying the filter is ${filteredResults.length}`
+        )
       }
 
       if (!this.register_disabled_app) {
         console.log(`Filtering disabled apps...`)
-        filteredResults = filteredResults.filter(appInfo => !appInfo.tags.includes('HideApp'))
-        console.log(`The number after applying the filter is ${filteredResults.length}`)
+        filteredResults = filteredResults.filter(
+          appInfo => !appInfo.tags.includes('HideApp')
+        )
+        console.log(
+          `The number after applying the filter is ${filteredResults.length}`
+        )
       }
 
       return filteredResults
