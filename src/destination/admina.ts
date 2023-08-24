@@ -1,5 +1,5 @@
-import axios, { AxiosError } from 'axios'
-import { checkEnv } from '../util/env'
+import axios, {AxiosError} from 'axios'
+import {checkEnv} from '../util/env'
 
 export interface AppInfo {
   displayName: string
@@ -132,7 +132,7 @@ class Admina {
     const newUsers = users.filter(
       (user: UserInfo) => !accountEmails.includes(user.email)
     )
-    const deletedUsers: { email: string; displayName: string }[] =
+    const deletedUsers: {email: string; displayName: string}[] =
       accountListResponse.data.items.filter(
         (account: any) =>
           !users.find((user: UserInfo) => user.email === account.email)
@@ -147,13 +147,13 @@ class Admina {
       deletedUsers.length
     )
 
-    const CHUNK_SIZE = 200;
+    const CHUNK_SIZE = 200
     function chunkArray<T>(array: T[], chunkSize: number): T[][] {
-      const results = [];
+      const results = []
       while (array.length) {
-        results.push(array.splice(0, chunkSize));
+        results.push(array.splice(0, chunkSize))
       }
-      return results;
+      return results
     }
 
     // Register accounts
@@ -165,11 +165,10 @@ class Admina {
           create: chunk.map(user => ({
             email: user.email,
             displayName: user.displayName,
-            userName: user.displayName,
-            roles: ['user']
+            userName: user.displayName
           }))
-        };
-        await axios.post(registerEndpoint, createData, this.request_header);
+        }
+        await axios.post(registerEndpoint, createData, this.request_header)
       }
       // Update Existing Users
       for (const chunk of chunkArray(existingUsers, CHUNK_SIZE)) {
@@ -177,11 +176,10 @@ class Admina {
           update: chunk.map(user => ({
             email: user.email,
             displayName: user.displayName,
-            userName: user.displayName,
-            roles: ['user']
+            userName: user.displayName
           }))
-        };
-        await axios.post(registerEndpoint, updateData, this.request_header);
+        }
+        await axios.post(registerEndpoint, updateData, this.request_header)
       }
 
       // Delete Users
@@ -191,8 +189,8 @@ class Admina {
             email: account.email,
             displayName: account.displayName
           }))
-        };
-        await axios.post(registerEndpoint, deleteData, this.request_header);
+        }
+        await axios.post(registerEndpoint, deleteData, this.request_header)
       }
     } catch (error: any) {
       if (error && (error as AxiosError).response) {

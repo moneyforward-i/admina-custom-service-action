@@ -35,6 +35,10 @@ inputs:
   ms_client_secret:
     description: 'The Azure AD client secret'
     required: false
+  preload_cache:
+    description: 'When syncing many apps, caching in advance will make the operation faster. If you only specify a few apps in target_services, using false may be faster. This option caches all User and Group objects in advance.'
+    required: false
+    default: 'true'
   ## Admina
   admina_org_id:
     description: 'The Admina organization id'
