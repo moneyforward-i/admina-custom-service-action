@@ -147,28 +147,51 @@ class Admina {
       deletedUsers.length
     )
 
+    const CHUNK_SIZE = 200
+    function chunkArray<T>(array: T[], chunkSize: number): T[][] {
+      const results = []
+      while (array.length) {
+        results.push(array.splice(0, chunkSize))
+      }
+      return results
+    }
+
     // Register accounts
     const registerEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspace/${workspaceId}/accounts/custom`
-    const requestData = {
-      create: newUsers.map(user => ({
-        email: user.email,
-        displayName: user.displayName,
-        userName: user.displayName,
-        roles: ['user']
-      })),
-      update: existingUsers.map(user => ({
-        email: user.email,
-        displayName: user.displayName,
-        userName: user.displayName,
-        roles: ['user']
-      })),
-      delete: deletedUsers.map(account => ({
-        email: account.email,
-        displayName: account.displayName
-      }))
-    }
     try {
-      await axios.post(registerEndpoint, requestData, this.request_header)
+      // Create New Users
+      for (const chunk of chunkArray(newUsers, CHUNK_SIZE)) {
+        const createData = {
+          create: chunk.map(user => ({
+            email: user.email,
+            displayName: user.displayName,
+            userName: user.displayName
+          }))
+        }
+        await axios.post(registerEndpoint, createData, this.request_header)
+      }
+      // Update Existing Users
+      for (const chunk of chunkArray(existingUsers, CHUNK_SIZE)) {
+        const updateData = {
+          update: chunk.map(user => ({
+            email: user.email,
+            displayName: user.displayName,
+            userName: user.displayName
+          }))
+        }
+        await axios.post(registerEndpoint, updateData, this.request_header)
+      }
+
+      // Delete Users
+      for (const chunk of chunkArray(deletedUsers, CHUNK_SIZE)) {
+        const deleteData = {
+          delete: chunk.map(account => ({
+            email: account.email,
+            displayName: account.displayName
+          }))
+        }
+        await axios.post(registerEndpoint, deleteData, this.request_header)
+      }
     } catch (error: any) {
       if (error && (error as AxiosError).response) {
         const axiosError = error as AxiosError

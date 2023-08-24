@@ -14,6 +14,17 @@ inputs:
   destination:
     description: 'The destination Service Name'
     required: true
+  register_zero_user_app:
+    description: 'Sync or not Sync if zero users have access to the application'
+    required: false
+    default: 'false'
+  register_disabled_app:
+    description: 'Register or not register any disabled applications.'
+    required: false
+    default: 'false'
+  target_services:
+    description: 'The target services to sync'
+    required: false
   ## AzureAd
   ms_client_id:
     description: 'The Azure AD client id'
@@ -24,6 +35,10 @@ inputs:
   ms_client_secret:
     description: 'The Azure AD client secret'
     required: false
+  preload_cache:
+    description: 'When syncing many apps, caching in advance will make the operation faster. If you only specify a few apps in target_services, using false may be faster. This option caches all User and Group objects in advance.'
+    required: false
+    default: 'true'
   ## Admina
   admina_org_id:
     description: 'The Admina organization id'
