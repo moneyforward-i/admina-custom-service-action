@@ -20,6 +20,7 @@ export async function transformDataToAdmina(
     }
     return app
   } catch (error) {
-    throw new Error(`Error in transformDataToAdmina ${error}`)
+    console.log('tansform data error:', error)
+    throw new Error(`Error in transformDataToAdmina`)
   }
 }
