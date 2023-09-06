@@ -4,6 +4,8 @@ This is the action to register a custom service/workspace in Admina
 
 [![AUTHOR](https://img.shields.io/badge/Author-admina-orange)](https://admina.moneyforward.com/) [![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
+Official Help Page is [here](https://support.itmc.i.moneyforward.com/article/4d8u74ynkd-azure-ad-sso-apps-sync-tool)
+
 ## Features
 
 ### Sync App & Account
