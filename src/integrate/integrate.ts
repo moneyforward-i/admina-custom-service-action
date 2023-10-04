@@ -8,9 +8,9 @@ import * as AzureAdTransform from '../transform/azuread'
 import * as AdminaDist from '../destination/admina'
 
 // Data
-import {Source, Destination} from '../integrate/enum'
+import { Source, Destination } from '../integrate/enum'
 
-import {PromisePool} from '@supercharge/promise-pool'
+import { PromisePool } from '@supercharge/promise-pool'
 
 export const Sync = async (
   src: string,
@@ -44,8 +44,8 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
       console.log('Getting Azure AD data...')
       const azureAdData = await AzureAdSource.fetchApps(inputs)
       console.log('Registering custom service...')
-      const {results, errors} = await PromisePool.for(azureAdData)
-        .withConcurrency(2) // Limit the parallel processes to 2.
+      const { results, errors } = await PromisePool.for(azureAdData)
+        .withConcurrency(1)
         .process(async (app: AzureAdSource.AppInfo) => {
           await AdminaDist.registerCustomService(
             await AzureAdTransform.transformDataToAdmina(app),

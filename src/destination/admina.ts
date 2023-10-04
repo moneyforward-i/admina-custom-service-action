@@ -1,5 +1,5 @@
-import axios, {AxiosError} from 'axios'
-import {checkEnv} from '../util/env'
+import axios, { AxiosError } from 'axios'
+import { checkEnv } from '../util/env'
 
 export interface AppInfo {
   displayName: string
@@ -17,6 +17,7 @@ export async function registerCustomService(
 ): Promise<void> {
   const admina = new Admina(inputs)
   await admina.registerCustomService(app)
+  await new Promise(resolve => setTimeout(resolve, 30000));
 }
 
 class Admina {
@@ -132,7 +133,7 @@ class Admina {
     const newUsers = users.filter(
       (user: UserInfo) => !accountEmails.includes(user.email)
     )
-    const deletedUsers: {email: string; displayName: string}[] =
+    const deletedUsers: { email: string; displayName: string }[] =
       accountListResponse.data.items.filter(
         (account: any) =>
           !users.find((user: UserInfo) => user.email === account.email)
@@ -147,7 +148,7 @@ class Admina {
       deletedUsers.length
     )
 
-    const CHUNK_SIZE = 200
+    const CHUNK_SIZE = 100
     function chunkArray<T>(array: T[], chunkSize: number): T[][] {
       const results = []
       while (array.length) {
