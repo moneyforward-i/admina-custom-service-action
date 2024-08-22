@@ -2,7 +2,7 @@
   "name": "admina-custom-service-action",
   "version": "1.0.0",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=20.0.0"
   },
   "description": "GitHub Action to sync data from various cloud services to Admina",
   "main": "lib/index.js",
