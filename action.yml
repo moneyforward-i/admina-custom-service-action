@@ -25,6 +25,10 @@ inputs:
   target_services:
     description: 'The target services to sync'
     required: false
+  preload_cache:
+    description: 'When syncing many apps, caching in advance will make the operation faster. If you only specify a few apps in target_services, using false may be faster. This option caches all User and Group objects in advance.'
+    required: false
+    default: 'true'
   ## AzureAd
   ms_client_id:
     description: 'The Azure AD client id'
@@ -35,10 +39,19 @@ inputs:
   ms_client_secret:
     description: 'The Azure AD client secret'
     required: false
-  preload_cache:
-    description: 'When syncing many apps, caching in advance will make the operation faster. If you only specify a few apps in target_services, using false may be faster. This option caches all User and Group objects in advance.'
+  ## Kintone
+  kintone_sub_domain:
+    description: 'The Kintone sub domain'
     required: false
-    default: 'true'
+  kintone_api_key:
+    description: 'The Kintone API key'
+    required: false
+  kintone_app_id:
+    description: 'The Kintone App ID'
+    required: false
+  kintone_field_mapping:
+    description: 'The Kintone field mapping with Admina Field'
+    required: false
   ## Admina
   admina_org_id:
     description: 'The Admina organization id'
