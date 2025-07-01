@@ -30,7 +30,7 @@
     "yaml": "^2.8.0"
   },
   "devDependencies": {
-    "@types/node": "^22.13.1",
+    "@types/node": "^24.0.8",
     "@vercel/ncc": "^0.38.3",
     "js-yaml": "^4.1.0",
     "prettier": "^3.5.3",
