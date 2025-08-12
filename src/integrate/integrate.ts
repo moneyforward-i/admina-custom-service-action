@@ -1,16 +1,17 @@
 // Source
 import * as AzureAdSource from '../source/azuread'
+import * as KintoneSource from '../source/kintone'
 
 // Transform
 import * as AzureAdTransform from '../transform/azuread'
+import * as KintoneTransform from '../transform/kintone'
 
 // Destination
 import * as AdminaDist from '../destination/admina'
 
 // Data
-import {Source, Destination} from '../integrate/enum'
-
-import {PromisePool} from '@supercharge/promise-pool'
+import { Source, Destination } from '../integrate/enum'
+import { PromisePool } from '@supercharge/promise-pool'
 
 export const Sync = async (
   src: string,
@@ -39,12 +40,13 @@ export const Sync = async (
 
 const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
   switch (source) {
+    // AzureAD
     case Source.AzureAd:
       // Get AzureAd Data
       console.log('Getting Azure AD data...')
       const azureAdData = await AzureAdSource.fetchApps(inputs)
       console.log('Registering custom service...')
-      const {results, errors} = await PromisePool.for(azureAdData)
+      const { results: aadResults, errors: aadErrors } = await PromisePool.for(azureAdData)
         .withConcurrency(2) // Limit the parallel processes to 2.
         .process(async (app: AzureAdSource.AppInfo) => {
           await AdminaDist.registerCustomService(
@@ -53,13 +55,35 @@ const syncToAdmina = async (source: Source, inputs: Record<string, string>) => {
           )
         })
 
-      errors.forEach(error => {
+      aadErrors.forEach(error => {
         console.log('Failed to register service', error)
       })
-      if (errors.length > 0) {
+      if (aadErrors.length > 0) {
         throw new Error('Failed to register services.')
       }
 
+      break
+    // Kintone
+    case Source.kintone:
+      // Get Kintone Data
+      console.log('Getting Azure AD data...')
+      const kintoneData = await KintoneSource.fetchApps(inputs)
+      console.log('Registering custom service...')
+
+      const { results: kintoneResults, errors: kintoneErrors } = await PromisePool.for(kintoneData)
+        .withConcurrency(2) // Limit the parallel processes to 2.
+        .process(async (app: KintoneSource.AppInfo) => {
+          await AdminaDist.registerCustomService(
+            await KintoneTransform.transformDataToAdmina(app),
+            inputs
+          )
+        })
+      kintoneErrors.forEach(error => {
+        console.log('Failed to register service', error)
+      })
+      if (kintoneErrors.length > 0) {
+        throw new Error('Failed to register services.')
+      }
       break
     default:
       throw new Error(`Undeveloped source: ${source}`)
