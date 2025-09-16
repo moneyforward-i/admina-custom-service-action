@@ -26,7 +26,7 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@supercharge/promise-pool": "^3.2.0",
-    "axios": "^1.11.0",
+    "axios": "^1.12.0",
     "yaml": "^2.8.1"
   },
   "devDependencies": {
