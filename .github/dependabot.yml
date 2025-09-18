@@ -1,11 +1,29 @@
 version: 2
 updates:
-  - package-ecosystem: github-actions
+  # default dependency upgrades - we define target-branch explicitly to have two separate dependabot rules (until Github finally fixes this)
+  - package-ecosystem: npm
+    target-branch: develop
     directory: /
     schedule:
       interval: monthly
+      time: "10:00"
+      timezone: Asia/Tokyo
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10 # default is 5
 
+  # security updates only
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+      time: "10:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 0 # security updates only
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      time: "10:00"
+      timezone: Asia/Tokyo
