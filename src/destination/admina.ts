@@ -87,7 +87,11 @@ class Admina {
         serviceId = result.serviceId
       } catch (error) {
         // Error already logged in createWorkspace
-        console.error(`Skipping account registration for ${targetWorkspaceName} due to workspace creation failure`)
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        console.error(
+          `Skipping account registration for ${targetWorkspaceName} due to workspace creation failure:`,
+          errorMsg
+        )
         return // Skip account registration if workspace creation fails
       }
     }
