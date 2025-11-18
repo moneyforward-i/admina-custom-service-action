@@ -1,9 +1,6 @@
 // Source
 import * as azuread from '../source/azuread'
 
-// Destination
-import * as admina from '../destination/admina'
-
 /**
  * Transform Azure AD AppInfo to Admina format
  * Currently, AppInfo is shared between source and destination, so no transformation is needed

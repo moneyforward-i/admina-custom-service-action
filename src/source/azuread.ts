@@ -56,14 +56,14 @@ class AzureAD {
   private clientId: string
   private tenantId: string
   private clientSecret: string
-  private registerZeroUserApp: boolean
-  private registerDisabledApp: boolean
-  private targetServices: string[]
+  private readonly registerZeroUserApp: boolean
+  private readonly registerDisabledApp: boolean
+  private readonly targetServices: string[]
   private accessToken: string
   private tokenExpiryTime: number
   private groups: Group[] = []
   private users: UserInfo[] = []
-  private preloadCache: boolean
+  private readonly preloadCache: boolean
 
   constructor(inputs: Record<string, string>) {
     checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], inputs)

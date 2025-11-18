@@ -55,26 +55,24 @@ class Admina {
             const existingWorkspace = this.findWorkspaceByName(ssoService, targetWorkspaceName);
             let workspaceId;
             let serviceId;
-            let serviceName;
-            if (!existingWorkspace) {
+            if (existingWorkspace) {
+                // Use existing workspace
+                workspaceId = existingWorkspace.id;
+                serviceId = ssoService.id;
+                console.log(`Workspace already exists | Service: ${ssoService.name}(${serviceId}), Workspace: ${targetWorkspaceName}(${workspaceId})`);
+            }
+            else {
                 // Create new workspace
                 try {
                     const result = yield this.createWorkspace(constants_1.API_CONFIG.SSO_SERVICE_NAME, targetWorkspaceName);
                     workspaceId = result.workspaceId;
                     serviceId = result.serviceId;
-                    serviceName = result.serviceName;
                 }
                 catch (error) {
                     // Error already logged in createWorkspace
+                    console.error(`Skipping account registration for ${targetWorkspaceName} due to workspace creation failure`);
                     return; // Skip account registration if workspace creation fails
                 }
-            }
-            else {
-                // Use existing workspace
-                workspaceId = existingWorkspace.id;
-                serviceId = ssoService.id;
-                serviceName = ssoService.name;
-                console.log(`Workspace already exists | Service: ${serviceName}(${serviceId}), Workspace: ${targetWorkspaceName}(${workspaceId})`);
             }
             // Ensure serviceId is valid before proceeding to account registration
             if (!serviceId || typeof serviceId !== 'number' || serviceId <= 0) {

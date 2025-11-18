@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios'
 import { checkEnv } from '../util/env'
 import { AppInfo, UserInfo } from '../source/azuread'
-import { API_CONFIG, WORKSPACE_NOT_FOUND } from '../util/constants'
+import { API_CONFIG } from '../util/constants'
 
 export async function registerCustomService(
   app: AppInfo,
@@ -39,7 +39,7 @@ class Admina {
   private endpoint: string
   private orgId: string
   private apiKey: string
-  private requestHeader: AdminaRequestHeader
+  private readonly requestHeader: AdminaRequestHeader
 
   constructor(inputs: Record<string, string>) {
     checkEnv(['admina_org_id', 'admina_api_token'], inputs)
@@ -68,9 +68,15 @@ class Admina {
 
     let workspaceId: number
     let serviceId: number
-    let serviceName: string
 
-    if (!existingWorkspace) {
+    if (existingWorkspace) {
+      // Use existing workspace
+      workspaceId = existingWorkspace.id
+      serviceId = ssoService.id
+      console.log(
+        `Workspace already exists | Service: ${ssoService.name}(${serviceId}), Workspace: ${targetWorkspaceName}(${workspaceId})`
+      )
+    } else {
       // Create new workspace
       try {
         const result = await this.createWorkspace(
@@ -79,19 +85,11 @@ class Admina {
         )
         workspaceId = result.workspaceId
         serviceId = result.serviceId
-        serviceName = result.serviceName
       } catch (error) {
         // Error already logged in createWorkspace
+        console.error(`Skipping account registration for ${targetWorkspaceName} due to workspace creation failure`)
         return // Skip account registration if workspace creation fails
       }
-    } else {
-      // Use existing workspace
-      workspaceId = existingWorkspace.id
-      serviceId = ssoService.id
-      serviceName = ssoService.name
-      console.log(
-        `Workspace already exists | Service: ${serviceName}(${serviceId}), Workspace: ${targetWorkspaceName}(${workspaceId})`
-      )
     }
 
     // Ensure serviceId is valid before proceeding to account registration
