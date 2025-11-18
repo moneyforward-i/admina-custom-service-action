@@ -1,15 +1,7 @@
-import axios, {AxiosError} from 'axios'
-import {checkEnv} from '../util/env'
-
-export interface AppInfo {
-  displayName: string
-  identifierUris: string[]
-  users: UserInfo[]
-}
-export interface UserInfo {
-  email: string
-  displayName: string
-}
+import axios, { AxiosError } from 'axios'
+import { checkEnv } from '../util/env'
+import { AppInfo, UserInfo } from '../source/azuread'
+import { API_CONFIG } from '../util/constants'
 
 export async function registerCustomService(
   app: AppInfo,
@@ -19,18 +11,42 @@ export async function registerCustomService(
   await admina.registerCustomService(app)
 }
 
+interface AdminaService {
+  id: number
+  name: string
+  workspaces: AdminaWorkspace[]
+}
+
+interface AdminaWorkspace {
+  id: number
+  workspaceName: string
+}
+
+interface AdminaRequestHeader {
+  headers: {
+    Authorization: string
+    'Content-Type': string
+  }
+}
+
+interface WorkspaceCreationResult {
+  workspaceId: number
+  serviceId: number
+  serviceName: string
+}
+
 class Admina {
   private endpoint: string
   private orgId: string
   private apiKey: string
-  private request_header: any
+  private readonly requestHeader: AdminaRequestHeader
 
   constructor(inputs: Record<string, string>) {
     checkEnv(['admina_org_id', 'admina_api_token'], inputs)
-    this.endpoint = 'https://api.itmc.i.moneyforward.com'
+    this.endpoint = API_CONFIG.ADMINA_ENDPOINT
     this.orgId = inputs['admina_org_id']
     this.apiKey = inputs['admina_api_token']
-    this.request_header = {
+    this.requestHeader = {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json'
@@ -39,67 +55,53 @@ class Admina {
   }
 
   public async registerCustomService(appInfo: AppInfo): Promise<void> {
-    const SSO_SERVICE_NAME = 'Single Sign-On' // The service name is fixed.
+    // Validate workspace name
+    const targetWorkspaceName = appInfo.displayName.trim()
+    if (!targetWorkspaceName || targetWorkspaceName.length === 0) {
+      console.error(`❌ Workspace name is empty for app ${appInfo.displayName}. Skipping.`)
+      return
+    }
 
     // Check if the Service already exists in the Organization
-    const encodedServiceName = encodeURIComponent(SSO_SERVICE_NAME)
-    const serviceListEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/services?keyword=${encodedServiceName}`
-    const serviceListResponse = await axios.get(
-      serviceListEndpoint,
-      this.request_header
-    )
+    const ssoService = await this.findOrCreateService()
+    const existingWorkspace = this.findWorkspaceByName(ssoService, targetWorkspaceName)
 
-    const sso_service = serviceListResponse.data.items[0]
-    const sso_workspaces = sso_service ? sso_service.workspaces : [] //　完全に新規登録
-    const targetWorkspaceName = appInfo.displayName
+    let workspaceId: number
+    let serviceId: number
 
-    let serviceId = sso_service ? sso_service.id : null
-    let serviceName = sso_service ? sso_service.name : null
-    let workspaceId: number = -1 // dummy
-
-    // Check if the Workspace already exists in the Service
-    for (const workspace of sso_workspaces) {
-      if (workspace.workspaceName === appInfo.displayName) {
-        workspaceId = workspace.id
-        break
+    if (existingWorkspace) {
+      // Use existing workspace
+      workspaceId = existingWorkspace.id
+      serviceId = ssoService.id
+      console.log(
+        `Workspace already exists | Service: ${ssoService.name}(${serviceId}), Workspace: ${targetWorkspaceName}(${workspaceId})`
+      )
+    } else {
+      // Create new workspace
+      try {
+        const result = await this.createWorkspace(
+          API_CONFIG.SSO_SERVICE_NAME,
+          targetWorkspaceName
+        )
+        workspaceId = result.workspaceId
+        serviceId = result.serviceId
+      } catch (error) {
+        // Error already logged in createWorkspace
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        console.error(
+          `Skipping account registration for ${targetWorkspaceName} due to workspace creation failure:`,
+          errorMsg
+        )
+        return // Skip account registration if workspace creation fails
       }
     }
 
-    if (workspaceId == -1) {
-      // Create Workspace if it does not exist
-      const customWsEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspaces/custom`
-      const customWsPayload = {
-        serviceName: SSO_SERVICE_NAME,
-        serviceUrl: appInfo.identifierUris[0],
-        workspaceName: targetWorkspaceName
-      }
-      const customWsConfig = {
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        }
-      }
-      const customServiceResponse = await axios.post(
-        customWsEndpoint,
-        customWsPayload,
-        customWsConfig
+    // Ensure serviceId is valid before proceeding to account registration
+    if (!serviceId || typeof serviceId !== 'number' || serviceId <= 0) {
+      console.error(
+        `❌ Invalid or missing serviceId (${serviceId}) for workspace ${targetWorkspaceName}. Skipping account registration.`
       )
-      workspaceId = customServiceResponse.data.workspace.id
-      serviceId = customServiceResponse.data.service.id
-      console.log(
-        'Workspace created | ServiceName:',
-        serviceName + '(' + serviceId + ')',
-        ',WorkspaceName:',
-        targetWorkspaceName + '(' + workspaceId + ')'
-      )
-    } else {
-      // Skip Workspace Creation if it already exist
-      console.log(
-        'Workspace already exists | ServiceName:',
-        serviceName + '(' + serviceId + ')',
-        ', WorkspaceName:',
-        targetWorkspaceName + '(' + workspaceId + ')'
-      )
+      return
     }
 
     await this.registerUserAccountToCustomWorkspace(
@@ -108,6 +110,100 @@ class Admina {
       targetWorkspaceName,
       appInfo.users
     )
+  }
+
+  private async findOrCreateService(): Promise<AdminaService> {
+    const encodedServiceName = encodeURIComponent(API_CONFIG.SSO_SERVICE_NAME)
+    const serviceListEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/services?keyword=${encodedServiceName}`
+
+    const serviceListResponse = await axios.get(
+      serviceListEndpoint,
+      this.requestHeader
+    )
+
+    const ssoService = serviceListResponse.data.items[0]
+
+    // Return the service with empty workspaces array if not found (will be created on first workspace creation)
+    return ssoService || { id: null, name: null, workspaces: [] }
+  }
+
+  private findWorkspaceByName(
+    service: AdminaService,
+    workspaceName: string
+  ): AdminaWorkspace | undefined {
+    if (!service.workspaces || service.workspaces.length === 0) {
+      return undefined
+    }
+
+    return service.workspaces.find(
+      workspace => workspace.workspaceName === workspaceName
+    )
+  }
+
+  private async createWorkspace(
+    serviceName: string,
+    workspaceName: string
+  ): Promise<WorkspaceCreationResult> {
+    const customWsEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspaces/custom`
+
+    const customWsPayload: {
+      customWorkspaceType: string
+      serviceName: string
+      workspaceName: string
+    } = {
+      customWorkspaceType: 'manual_import',
+      serviceName: serviceName,
+      workspaceName: workspaceName
+    }
+
+    console.log(`Creating workspace: ${workspaceName} (customWorkspaceType: manual_import)`)
+
+    try {
+      const response = await axios.post(
+        customWsEndpoint,
+        customWsPayload,
+        this.requestHeader
+      )
+
+      const { workspace, service } = response.data
+      const createdServiceName = service?.name || serviceName
+
+      console.log(
+        `✅ Workspace created | Service: ${createdServiceName}(${service.id}), Workspace: ${workspaceName}(${workspace.id})`
+      )
+
+      return {
+        workspaceId: workspace.id,
+        serviceId: service.id,
+        serviceName: createdServiceName
+      }
+    } catch (error: any) {
+      if (error && (error as AxiosError).response) {
+        const axiosError = error as AxiosError
+        console.error(
+          `❌ Failed to create workspace for ${workspaceName}:`,
+          axiosError.message,
+          axiosError.response?.data,
+          'Payload:',
+          customWsPayload
+        )
+      } else if (error instanceof Error) {
+        console.error(
+          `❌ Failed to create workspace for ${workspaceName}:`,
+          error.message,
+          'Payload:',
+          customWsPayload
+        )
+      } else {
+        console.error(
+          `❌ Unknown error during workspace creation for ${workspaceName}:`,
+          error,
+          'Payload:',
+          customWsPayload
+        )
+      }
+      throw error
+    }
   }
 
   private async registerUserAccountToCustomWorkspace(
@@ -119,7 +215,7 @@ class Admina {
     const accountListEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/services/${serviceId}/accounts?workspaceId=${workspaceId}`
     const accountListResponse = await axios.get(
       accountListEndpoint,
-      this.request_header
+      this.requestHeader
     )
     const accountEmails = accountListResponse.data.items.map(
       (account: any) => account.email
@@ -132,35 +228,30 @@ class Admina {
     const newUsers = users.filter(
       (user: UserInfo) => !accountEmails.includes(user.email)
     )
-    const deletedUsers: {email: string; displayName: string}[] =
+    const deletedUsers: { email: string; displayName: string }[] =
       accountListResponse.data.items.filter(
         (account: any) =>
           !users.find((user: UserInfo) => user.email === account.email)
       )
 
     console.log(
-      `Register data into ${wsName}: existingUsers`,
-      existingUsers.length,
-      ', newUsers',
-      newUsers.length,
-      ', deleteAccounts',
-      deletedUsers.length
+      `Register data into ${wsName}: existingUsers ${existingUsers.length}, newUsers ${newUsers.length}, deleteAccounts ${deletedUsers.length}`
     )
 
-    const CHUNK_SIZE = 3000
     function chunkArray<T>(array: T[], chunkSize: number): T[][] {
       const results = []
-      while (array.length) {
-        results.push(array.splice(0, chunkSize))
+      const arrayCopy = [...array] // Create a copy to avoid mutating the original
+      while (arrayCopy.length) {
+        results.push(arrayCopy.splice(0, chunkSize))
       }
       return results
     }
 
     // Register accounts
-    const registerEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspace/${workspaceId}/accounts/custom`
+    const registerEndpoint = `${this.endpoint}/api/v1/organizations/${this.orgId}/workspaces/${workspaceId}/accounts/custom`
     try {
       // Create New Users
-      for (const chunk of chunkArray(newUsers, CHUNK_SIZE)) {
+      for (const chunk of chunkArray(newUsers, API_CONFIG.CHUNK_SIZE)) {
         const createData = {
           create: chunk.map(user => ({
             email: user.email,
@@ -168,10 +259,11 @@ class Admina {
             userName: user.displayName
           }))
         }
-        await axios.post(registerEndpoint, createData, this.request_header)
+        await axios.post(registerEndpoint, createData, this.requestHeader)
       }
+
       // Update Existing Users
-      for (const chunk of chunkArray(existingUsers, CHUNK_SIZE)) {
+      for (const chunk of chunkArray(existingUsers, API_CONFIG.CHUNK_SIZE)) {
         const updateData = {
           update: chunk.map(user => ({
             email: user.email,
@@ -179,18 +271,18 @@ class Admina {
             userName: user.displayName
           }))
         }
-        await axios.post(registerEndpoint, updateData, this.request_header)
+        await axios.post(registerEndpoint, updateData, this.requestHeader)
       }
 
       // Delete Users
-      for (const chunk of chunkArray(deletedUsers, CHUNK_SIZE)) {
+      for (const chunk of chunkArray(deletedUsers, API_CONFIG.CHUNK_SIZE)) {
         const deleteData = {
           delete: chunk.map(account => ({
             email: account.email,
             displayName: account.displayName
           }))
         }
-        await axios.post(registerEndpoint, deleteData, this.request_header)
+        await axios.post(registerEndpoint, deleteData, this.requestHeader)
       }
     } catch (error: any) {
       if (error && (error as AxiosError).response) {

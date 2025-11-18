@@ -1,15 +1,17 @@
-import axios from 'axios'
-import {checkEnv} from '../util/env'
-import {PromisePool} from '@supercharge/promise-pool'
+import axios, { AxiosResponse } from 'axios'
+import { checkEnv } from '../util/env'
+import { PromisePool } from '@supercharge/promise-pool'
+import { API_CONFIG, SSO_APP_TAGS } from '../util/constants'
 
 export interface AppInfo {
   appId: string
   displayName: string
-  principleId: string
+  principalId: string
   signInAudience: string
   identifierUris: string[]
   tags: string[]
   users: UserInfo[]
+  serviceUrl?: string
 }
 
 export interface UserInfo {
@@ -24,40 +26,66 @@ export interface Group {
   members: string[]
 }
 
+interface GraphApiResponse<T> {
+  value: T[]
+  '@odata.nextLink'?: string
+}
+
+interface ServicePrincipalResponse {
+  id: string
+  tags?: string[]
+}
+
+interface ApplicationResponse {
+  appId: string
+  displayName: string
+  signInAudience: string
+  identifierUris: string[]
+  tags?: string[]
+  web?: {
+    homePageUrl?: string
+  }
+}
+
+interface TokenResponse {
+  access_token: string
+  expires_in: number
+}
+
 class AzureAD {
   private clientId: string
   private tenantId: string
   private clientSecret: string
-  private register_zero_user_app: boolean
-  private register_disabled_app: boolean
-  private target_services: string[]
-  private access_token: string
-  private token_expiry_time: number
+  private readonly registerZeroUserApp: boolean
+  private readonly registerDisabledApp: boolean
+  private readonly targetServices: string[]
+  private accessToken: string
+  private tokenExpiryTime: number
   private groups: Group[] = []
   private users: UserInfo[] = []
-  private preload_cache: boolean
+  private readonly preloadCache: boolean
 
   constructor(inputs: Record<string, string>) {
     checkEnv(['ms_client_id', 'ms_tenant_id', 'ms_client_secret'], inputs)
     this.clientId = inputs['ms_client_id']
     this.tenantId = inputs['ms_tenant_id']
     this.clientSecret = inputs['ms_client_secret']
-    this.register_zero_user_app = inputs['register_zero_user_app'] === 'true'
-    this.register_disabled_app = inputs['register_disabled_app'] === 'true'
-    this.target_services = inputs['target_services']
+    this.registerZeroUserApp = inputs['register_zero_user_app'] === 'true'
+    this.registerDisabledApp = inputs['register_disabled_app'] === 'true'
+    this.targetServices = inputs['target_services']
       ? inputs['target_services'].split(',')
       : []
-    this.preload_cache = inputs['preload_cache']
+    this.preloadCache = inputs['preload_cache']
       ? inputs['preload_cache'] === 'true'
       : true
-    this.access_token = ''
-    this.token_expiry_time = Math.floor(Date.now() / 1000)
+    this.accessToken = ''
+    this.tokenExpiryTime = Math.floor(Date.now() / 1000)
   }
 
-  private async getAccessToken(): Promise<{token: string; expiresIn: number}> {
+  private async getAccessToken(): Promise<{ token: string; expiresIn: number }> {
     console.log('🔐 Getting access token...')
     const url = new URL(
-      `https://login.microsoftonline.com/${this.tenantId}/oauth2/v2.0/token`
+      `${API_CONFIG.GRAPH_AUTH_ENDPOINT}/${this.tenantId}/oauth2/v2.0/token`
     )
 
     const params = new URLSearchParams()
@@ -67,7 +95,7 @@ class AzureAD {
     params.append('scope', 'https://graph.microsoft.com/.default')
 
     try {
-      const response = await axios.post(url.toString(), params, {
+      const response = await axios.post<TokenResponse>(url.toString(), params, {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
         }
@@ -78,9 +106,25 @@ class AzureAD {
         expiresIn: response.data.expires_in
       }
     } catch (error) {
-      console.log('Failed to get access token', error)
-      throw new Error(`An unknown error occurred while getting access token`)
+      console.error('Failed to get access token', error)
+      throw new Error('An unknown error occurred while getting access token')
     }
+  }
+
+  private async ensureValidToken(): Promise<string> {
+    const currentTime = Math.floor(Date.now() / 1000)
+
+    if (
+      !this.tokenExpiryTime ||
+      currentTime >= this.tokenExpiryTime - API_CONFIG.TOKEN_REFRESH_BUFFER_SEC
+    ) {
+      console.log('🔄 Refreshing access token...')
+      const { token, expiresIn } = await this.getAccessToken()
+      this.accessToken = token
+      this.tokenExpiryTime = currentTime + expiresIn
+    }
+
+    return this.accessToken
   }
 
   private async getEnterpriseApplications(
@@ -93,20 +137,23 @@ class AzureAD {
       .join(' or ')
     const url = nextUrl
       ? new URL(nextUrl)
-      : new URL('https://graph.microsoft.com/v1.0/applications')
-    url.searchParams.set('$top', '999')
+      : new URL(`${API_CONFIG.GRAPH_API_ENDPOINT}/applications`)
+    url.searchParams.set('$top', String(API_CONFIG.MAX_ITEMS_PER_PAGE))
     if (filterQueries) {
       url.searchParams.set('$filter', filterQueries)
     }
 
-    const response = await axios.get(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
+    const response = await axios.get<GraphApiResponse<ApplicationResponse>>(
+      url.toString(),
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
       }
-    })
+    )
     const apps = response.data.value
 
-    // AppInfo型として必要なプロパティを定義
+    // Type guard function
     const appInfoKeys = [
       'appId',
       'displayName',
@@ -115,69 +162,80 @@ class AzureAD {
       'tags'
     ] as const
 
-    // 型ガード関数を定義
-    const isAppInfo = (obj: unknown): obj is AppInfo => {
+    const isAppInfo = (obj: unknown): obj is ApplicationResponse => {
       return appInfoKeys.every(key =>
         Object.prototype.hasOwnProperty.call(obj, key)
       )
     }
-    // PromisePoolで並列処理を実行
-    let appInfos = [] as AppInfo[]
-    const {results, errors} = await PromisePool.for<AppInfo>(
+
+    // Process apps in parallel with PromisePool
+    let appInfos: AppInfo[] = []
+    const { results, errors } = await PromisePool.for<ApplicationResponse>(
       apps.filter(isAppInfo)
-    ) // 型ガードでフィルタリング
-      .withConcurrency(5) // 並列数を5に制限
-      .process(async (app: AppInfo) => {
+    )
+      .withConcurrency(API_CONFIG.CONCURRENT_REQUESTS)
+      .process(async (app: ApplicationResponse) => {
         // Get the service principal id
         const servicePrincipalUrl = new URL(
-          'https://graph.microsoft.com/v1.0/servicePrincipals'
+          `${API_CONFIG.GRAPH_API_ENDPOINT}/servicePrincipals`
         )
         servicePrincipalUrl.searchParams.set(
           '$filter',
           `appId eq '${app.appId}'`
         )
-        const servicePrincipalResponse = await axios.get(
-          servicePrincipalUrl.toString(),
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`
-            }
+        const servicePrincipalResponse = await axios.get<
+          GraphApiResponse<ServicePrincipalResponse>
+        >(servicePrincipalUrl.toString(), {
+          headers: {
+            Authorization: `Bearer ${accessToken}`
           }
-        )
+        })
         const servicePrincipalId = servicePrincipalResponse.data.value[0]?.id
         const tags: string[] =
           servicePrincipalResponse.data.value[0]?.tags ?? []
+
+        // Skip if Service Principal not found
+        if (!servicePrincipalId) {
+          console.warn(
+            `⚠️ Service Principal not found for app ${app.displayName} (appId: ${app.appId}). Skipping.`
+          )
+          return null as any
+        }
+
+        // Get serviceUrl: prioritize web.homePageUrl, fallback to identifierUris[0]
+        let serviceUrl: string | undefined
+        const webHomePageUrl = app.web?.homePageUrl
+        if (webHomePageUrl) {
+          serviceUrl = webHomePageUrl
+        } else if (app.identifierUris && app.identifierUris.length > 0) {
+          serviceUrl = app.identifierUris[0]
+        }
+
         const appInfo: AppInfo = {
           appId: app.appId,
           displayName: app.displayName,
-          principleId: servicePrincipalId,
+          principalId: servicePrincipalId,
           signInAudience: app.signInAudience,
           identifierUris: app.identifierUris,
           tags: tags,
-          users: []
+          users: [],
+          serviceUrl: serviceUrl
         }
         return appInfo
       })
+
     errors.forEach(error => {
-      console.log(error)
-      throw new Error(`Fail to get app info.[${serviceNames}]`)
+      console.error('Error processing app:', error)
     })
-    if (errors.length > 0) {
-      throw new Error('Fail to get app info.')
-    }
 
-    appInfos = results
+    // Filter out nulls (apps without Service Principal)
+    appInfos = results.filter((app): app is AppInfo => app !== null)
 
-    // After the Promise.all is resolved, then filter the apps
+    // Filter apps by SSO tags
     appInfos = appInfos.filter(
       appInfo =>
         appInfo.tags &&
-        appInfo.tags.some(
-          tag =>
-            tag === 'WindowsAzureActiveDirectoryIntegratedApp' ||
-            tag.startsWith('WindowsAzureActiveDirectoryGalleryApplication') ||
-            tag === 'WindowsAzureActiveDirectoryCustomSingleSignOnApplication'
-        )
+        appInfo.tags.some(tag => SSO_APP_TAGS.some(ssoTag => tag.startsWith(ssoTag)))
     )
 
     if (response.data['@odata.nextLink']) {
@@ -196,8 +254,8 @@ class AzureAD {
     accessToken: string,
     url: string
   ): Promise<string[]> {
-    let userPrincipals = [] as string[]
-    const response = await axios.get(url, {
+    let userPrincipals: string[] = []
+    const response = await axios.get<GraphApiResponse<any>>(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`
       }
@@ -212,15 +270,15 @@ class AzureAD {
     )
 
     console.log(
-      `Getting ${users.length} users and ${groups.length} groups ...: ${response.data.value.length}}`
+      `Getting ${users.length} users and ${groups.length} groups ...: ${response.data.value.length}`
     )
     const newUserPrincipals = users.map((user: any) => user.principalId)
 
-    userPrincipals.concat(newUserPrincipals)
+    userPrincipals = userPrincipals.concat(newUserPrincipals)
 
     for (const group of groups) {
       console.log(
-        `Getting group members from[${group.principalDisplayName} ](${group.principalId})`
+        `Getting group members from [${group.principalDisplayName}](${group.principalId})`
       )
       const groupMembers = await this.getGroupMembers(
         accessToken,
@@ -245,7 +303,7 @@ class AzureAD {
     groupPrincipalId: string,
     nextUrl?: string
   ): Promise<string[]> {
-    // check cache
+    // Check cache
     const group = this.groups.find(g => g.principalId === groupPrincipalId)
     if (group) {
       return group.members
@@ -253,10 +311,10 @@ class AzureAD {
 
     const url = nextUrl
       ? nextUrl
-      : `https://graph.microsoft.com/v1.0/groups/${groupPrincipalId}/members?$top=999`
-    let group_members = [] as string[]
+      : `${API_CONFIG.GRAPH_API_ENDPOINT}/groups/${groupPrincipalId}/members?$top=${API_CONFIG.MAX_ITEMS_PER_PAGE}`
+    let groupMembers: string[] = []
     try {
-      const response = await axios.get(url, {
+      const response = await axios.get<GraphApiResponse<any>>(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`
         }
@@ -264,62 +322,60 @@ class AzureAD {
       const members = response.data.value.filter(
         (member: any) =>
           member['@odata.type'] === '#microsoft.graph.user' &&
-          member.Id !== null
+          member.id !== null
       )
       const groups = response.data.value.filter(
         (group: any) =>
-          group['@odata.type'] === '#microsoft.graph.group' && group.Id !== null
+          group['@odata.type'] === '#microsoft.graph.group' && group.id !== null
       )
 
-      group_members = group_members.concat(
+      groupMembers = groupMembers.concat(
         members.map((member: any) => member.id)
       )
 
       for (const group of groups) {
         const list = await this.getGroupMembers(accessToken, group.id)
-        group_members = group_members.concat(list)
+        groupMembers = groupMembers.concat(list)
       }
 
       if (response.data['@odata.nextLink']) {
         const nextMembers = await this.getGroupMembers(
           accessToken,
-          '--',
+          groupPrincipalId,
           response.data['@odata.nextLink']
         )
-        group_members = group_members.concat(nextMembers)
+        groupMembers = groupMembers.concat(nextMembers)
       }
     } catch (error) {
-      console.log(error)
-      throw new Error(`Fail to fetch group members. [ID:${groupPrincipalId}]`)
+      console.error(error)
+      throw new Error(`Failed to fetch group members. [ID:${groupPrincipalId}]`)
     }
-    return group_members
+    return groupMembers
   }
 
   private async getUserInfo(
     accessToken: string,
     principalId: string
   ): Promise<UserInfo> {
-    // check cache
+    // Check cache
     const user = this.users.find(u => u.principalId === principalId)
     if (user) {
       return user
     }
 
-    const baseUrl = `https://graph.microsoft.com/v1.0/users/${principalId}`
-    //console.log(`Getting user info from ${userUrl} ...`)
-    const userResponse = await axios.get(baseUrl, {
+    const baseUrl = `${API_CONFIG.GRAPH_API_ENDPOINT}/users/${principalId}`
+    const userResponse = await axios.get<any>(baseUrl, {
       headers: {
         Authorization: `Bearer ${accessToken}`
       },
-      timeout: 600000 //100sec timeout
+      timeout: API_CONFIG.API_TIMEOUT_MS
     })
 
     return {
       email: userResponse.data.userPrincipalName,
       displayName: userResponse.data.displayName,
       principalId: principalId
-      //groups: groups
-    } as UserInfo
+    }
   }
 
   private async getUsers(
@@ -328,52 +384,52 @@ class AzureAD {
   ): Promise<UserInfo[]> {
     const principals = await this.getUserPrincipals(accessToken, url)
     const uniquePrincipals = [...new Set(principals)]
-    console.log('the length of uniquePrincipals is ' + uniquePrincipals.length)
-    //console.log('the length of principals is ' + principals.length)
+    console.log('The length of uniquePrincipals is ' + uniquePrincipals.length)
 
     console.log(
       `Fetched ${uniquePrincipals.length} users ... and start to fetch the user info`
     )
-    const {results, errors} = await PromisePool.for(uniquePrincipals)
-      .withConcurrency(5) // 並列数を5に制限
-      .process(async (principal_id: string) => {
-        return await this.getUserInfo(accessToken, principal_id)
+    const { results, errors } = await PromisePool.for(uniquePrincipals)
+      .withConcurrency(API_CONFIG.CONCURRENT_REQUESTS)
+      .process(async (principalId: string) => {
+        return await this.getUserInfo(accessToken, principalId)
       })
     errors.forEach(error => {
-      console.log('Fail to get users', error)
+      console.error('Failed to get users:', error)
     })
     if (errors.length > 0) {
-      throw new Error('Fail to get users.')
+      throw new Error('Failed to get users.')
     }
 
     return results
   }
 
   private async preLoadAllGroups(accessToken: string): Promise<void> {
-    console.log('👥 Start preload group eneity cache ...')
+    console.log('👥 Start preload group entity cache ...')
 
     try {
-      // Groupの一覧を取得
-
-      let url = new URL('https://graph.microsoft.com/v1.0/groups')
+      let url: URL | null = new URL(`${API_CONFIG.GRAPH_API_ENDPOINT}/groups`)
       url.searchParams.set('$filter', 'securityEnabled eq true')
       url.searchParams.set('$top', '50')
 
       while (url) {
-        // https://learn.microsoft.com/graph/api/group-get?view=graph-rest-1.0&tabs=http#response-1
-        const response = await axios.get(url.toString(), {
-          headers: {
-            Authorization: `Bearer ${accessToken}`
+        const response: AxiosResponse<GraphApiResponse<any>> = await axios.get<GraphApiResponse<any>>(
+          url.toString(),
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`
+            }
           }
-        })
-        // Groupのメンバーを取得
+        )
+
+        // Get Group members
         const activeGroups = response.data.value.filter(
           (g: any) => !g.deletedDateTime
         )
-        const {results, errors} = await PromisePool.for(activeGroups)
-          .withConcurrency(5)
+        const { results, errors } = await PromisePool.for(activeGroups)
+          .withConcurrency(API_CONFIG.CONCURRENT_REQUESTS)
           .process(async (group: any) => {
-            let list = await this.getGroupMembers(accessToken, group.id)
+            const list = await this.getGroupMembers(accessToken, group.id)
             return {
               principalId: group.id,
               displayName: group.displayName,
@@ -382,10 +438,10 @@ class AzureAD {
           })
 
         errors.forEach(error => {
-          console.error('Error processing group', error)
+          console.error('Error processing group:', error)
         })
         if (errors.length > 0) {
-          throw new Error('Fail to preload group members.')
+          throw new Error('Failed to preload group members.')
         }
 
         for (const result of results) {
@@ -401,23 +457,23 @@ class AzureAD {
           )
           break
         }
-        url = new URL(response.data['@odata.nextLink']) // 次のページがある場合、URLを更新
+        url = new URL(response.data['@odata.nextLink'])
         console.log(
           '🫖 Now Loading ... ' + this.groups.length + ' groups cached'
         )
       }
     } catch (error) {
-      console.log('Fail to load group cache', error)
-      throw new Error(`Fail to preload groups. Please check the errors `)
+      console.error('Failed to load group cache:', error)
+      throw new Error('Failed to preload groups. Please check the errors')
     }
   }
 
   private async preLoadMembers(accessToken: string): Promise<void> {
-    console.log('🫥 Start preload member eneity cache ...')
-    let url = 'https://graph.microsoft.com/v1.0/users?$top=999'
+    console.log('🫥 Start preload member entity cache ...')
+    let url: string | null = `${API_CONFIG.GRAPH_API_ENDPOINT}/users?$top=${API_CONFIG.MAX_ITEMS_PER_PAGE}`
 
     while (url) {
-      const response = await axios.get(url, {
+      const response: AxiosResponse<GraphApiResponse<any>> = await axios.get<GraphApiResponse<any>>(url, {
         headers: {
           Authorization: `Bearer ${accessToken}`
         }
@@ -431,10 +487,27 @@ class AzureAD {
 
       this.users = this.users.concat(users)
 
-      url = response.data['@odata.nextLink'] || null // 次のページがある場合、URLを更新
+      url = response.data['@odata.nextLink'] || null
       console.log('🫖 Now Loading ... ' + this.users.length + ' users cached')
     }
-    console.log('🫖 Finish preload member eneity cache.')
+    console.log('🫖 Finish preload member entity cache.')
+  }
+
+  private handleApiError(error: any, context: string): never {
+    const errorMsg =
+      error?.response?.data?.error?.message ||
+      error?.message ||
+      'Unknown error'
+    const errorDetails = error?.response?.data
+      ? JSON.stringify(error.response.data)
+      : ''
+
+    console.error(`❌ ${context}`)
+    console.error(`   Error: ${errorMsg}`)
+    if (errorDetails) {
+      console.error(`   Details: ${errorDetails}`)
+    }
+    throw new Error(`${context}: ${errorMsg}`)
   }
 
   private async getAppInfos(
@@ -442,43 +515,51 @@ class AzureAD {
     app: AppInfo
   ): Promise<AppInfo> {
     console.log(
-      `🚀 Start to get [ ${app.displayName} ]'s AppInfos ... (ID:${app.principleId})`
+      `🚀 Start to get [${app.displayName}]'s AppInfos ... (ID:${app.principalId})`
     )
+
+    if (!app.principalId) {
+      const errorMsg = `Service Principal ID is missing for app ${app.displayName} (appId: ${app.appId})`
+      console.error(`❌ ${errorMsg}`)
+      throw new Error(errorMsg)
+    }
+
     const url = new URL(
-      `https://graph.microsoft.com/v1.0/servicePrincipals/${app.principleId}/appRoleAssignedTo`
+      `${API_CONFIG.GRAPH_API_ENDPOINT}/servicePrincipals/${app.principalId}/appRoleAssignedTo`
     )
-    url.searchParams.set('$top', '999')
+    url.searchParams.set('$top', String(API_CONFIG.MAX_ITEMS_PER_PAGE))
 
     try {
       const usersInfo = await this.getUsers(accessToken, url.toString())
       const appInfoWithUsers: AppInfo = {
         appId: app.appId,
         displayName: app.displayName,
-        principleId: app.principleId,
+        principalId: app.principalId,
         signInAudience: app.signInAudience,
         identifierUris: app.identifierUris,
         tags: app.tags,
-        users: usersInfo
+        users: usersInfo,
+        serviceUrl: app.serviceUrl
       }
       console.log(
-        `✅ Detected ${usersInfo.length} users in ${app.displayName} ... (${app.principleId})`
+        `✅ Detected ${usersInfo.length} users in ${app.displayName} ... (${app.principalId})`
       )
       return appInfoWithUsers
-    } catch (error) {
-      console.log(
-        `❌ Fail to get [ ${app.displayName} ]'s AppInfos ... (${app.principleId})`
+    } catch (error: any) {
+      this.handleApiError(
+        error,
+        `Failed to get [${app.displayName}]'s AppInfos ... (${app.principalId})`
       )
-      throw new Error('Fail to get app info.')
     }
   }
 
   public async fetchSsoApps(): Promise<AppInfo[]> {
-    await this.getAccessToken().then(async ({token, expiresIn}) => {
-      this.access_token = token
-      this.token_expiry_time = this.token_expiry_time + expiresIn
+    await this.getAccessToken().then(async ({ token, expiresIn }) => {
+      this.accessToken = token
+      this.tokenExpiryTime = this.tokenExpiryTime + expiresIn
 
       // Preload cache
-      if (this.preload_cache) {
+      if (this.preloadCache) {
         await this.preLoadMembers(token).then(async () => {
           await this.preLoadAllGroups(token)
         })
@@ -491,54 +572,39 @@ class AzureAD {
 
     try {
       const enterpriseApplications = await this.getEnterpriseApplications(
-        this.access_token,
-        this.target_services
+        this.accessToken,
+        this.targetServices
       )
       console.log(`Detected ${enterpriseApplications.length} SSO apps`)
-      let filteredResults = [] as AppInfo[]
+      let filteredResults: AppInfo[] = []
 
       try {
-        let results = [] as AppInfo[]
+        const results: AppInfo[] = []
         for (const appInfo of enterpriseApplications) {
-          // アクセストークンの有効期限をチェック
-          const currentTime = Math.floor(Date.now() / 1000)
-          if (
-            !this.token_expiry_time ||
-            currentTime >= this.token_expiry_time - 600
-          ) {
-            // 5分の猶予
-            const tokenData = await this.getAccessToken()
-            this.access_token = tokenData.token
-            this.token_expiry_time = currentTime + tokenData.expiresIn // 有効期限を更新
+          try {
+            // Ensure valid token before processing each app
+            const token = await this.ensureValidToken()
+            const appInfoWithUsers = await this.getAppInfos(token, appInfo)
+            results.push(appInfoWithUsers)
+          } catch (error: any) {
+            console.error(
+              `⚠️ Skipping app ${appInfo.displayName} due to error:`,
+              error.message || error
+            )
+            // Continue processing other apps instead of failing completely
           }
-
-          const appInfoWithUsers = await this.getAppInfos(
-            this.access_token,
-            appInfo
-          )
-          results.push(appInfoWithUsers)
         }
-        // const { results, errors } = await PromisePool
-        //   .for(enterpriseApplications)
-        //   .withConcurrency(1) // 並列数を5に制限
-        //   .process(appInfo =>
-        //     this.getAppInfos(access_token, appInfo) //.catch(err => {
-        //     //  throw new Error(`Failed to get assigned users for app ${appInfo.appId}: ${err}`)
-        //     //})
-        //   )
-        // errors.forEach(error => {
-        //   throw new Error(error.message);
-        // })
+
         filteredResults = results.filter(
           appInfo => appInfo !== null
         ) as AppInfo[]
       } catch (error) {
-        console.log('Fail to fetch list of applications', error)
-        throw new Error(`Failed to fetch list of applications.`)
+        console.error('Failed to fetch list of applications:', error)
+        throw new Error('Failed to fetch list of applications.')
       }
 
-      if (!this.register_zero_user_app) {
-        console.log(`Filtering apps with zero users...`)
+      if (!this.registerZeroUserApp) {
+        console.log('Filtering apps with zero users...')
         filteredResults = filteredResults.filter(
           appInfo => appInfo.users.length > 0
         )
@@ -547,8 +613,8 @@ class AzureAD {
         )
       }
 
-      if (!this.register_disabled_app) {
-        console.log(`Filtering disabled apps...`)
+      if (!this.registerDisabledApp) {
+        console.log('Filtering disabled apps...')
         filteredResults = filteredResults.filter(
           appInfo => !appInfo.tags.includes('HideApp')
         )
@@ -559,8 +625,8 @@ class AzureAD {
 
       return filteredResults
     } catch (error) {
-      console.log('Error fetching SSO apps', error)
-      throw new Error(`Fail to fetch SSO apps`)
+      console.error('Error fetching SSO apps:', error)
+      throw new Error('Failed to fetch SSO apps')
     }
   }
 }

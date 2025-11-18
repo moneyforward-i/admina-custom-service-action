@@ -26,16 +26,21 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@supercharge/promise-pool": "^3.2.0",
-    "axios": "^1.12.2",
-    "yaml": "^2.8.1"
+    "axios": "^1.8.4",
+    "yaml": "^2.7.1"
   },
   "devDependencies": {
-    "@types/node": "^22.18.8",
+    "@types/node": "^24.10.1",
     "@vercel/ncc": "^0.38.3",
+    "dotenv": "^17.2.3",
+    "glob": "^12.0.0",
     "js-yaml": "^4.1.0",
-    "prettier": "^3.6.2",
-    "ts-jest": "^29.4.4",
+    "prettier": "^3.5.3",
+    "ts-jest": "^29.3.1",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.8.2"
+  },
+  "overrides": {
+    "glob": "^12.0.0"
   }
 }

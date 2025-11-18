@@ -1,3 +1,4 @@
+require('dotenv').config({ errorOnMissing: false })
 import * as Integration from './integrate/integrate'
 import * as fs from 'fs'
 import * as path from 'path'
