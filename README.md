@@ -75,6 +75,12 @@ jobs:
 - [Admina Support](https://support.itmc.i.moneyforward.com/)
 - [Admina API Doc](https://docs.itmc.i.moneyforward.com/)
 
+## ドキュメント
+
+### シークレットキーの取得方法
+
+- [Entra ID (旧 Azure AD) からのシークレットキーの取得方法](./docs/source/entraid.md)
+
 ## Development
 
 How to run locally
