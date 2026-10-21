@@ -82,4 +82,8 @@ function getInputsFromKeys(
   )
 }
 
-run()
+run().catch((error: unknown) => {
+  // Only reachable if loading @actions/core itself fails; run() reports every other error via core.setFailed.
+  console.error(error)
+  process.exitCode = 1
+})
