@@ -9,12 +9,15 @@ type CoreType = {
   setFailed: (message: string) => void
   debug: (message: string) => void
 }
-let core: CoreType
-if (process.env.GITHUB_ACTIONS) {
-  // GITHUB_ACTIONS environment variable is automatically set in GitHub Actions
-  core = require('@actions/core')
-} else {
-  core = {
+async function loadCore(): Promise<CoreType> {
+  if (process.env.GITHUB_ACTIONS) {
+    // GITHUB_ACTIONS environment variable is automatically set in GitHub Actions
+    // @actions/core v3 is ESM-only, so it has to be loaded with a dynamic import().
+    // webpackMode "eager" keeps it in dist/index.js (no extra chunk), so ncc's
+    // licenses.txt still covers every bundled package.
+    return await import(/* webpackMode: "eager" */ '@actions/core')
+  }
+  return {
     getInput: name => process.env[name] || '',
     setFailed: message => console.error(message),
     debug: message => {
@@ -25,6 +28,7 @@ if (process.env.GITHUB_ACTIONS) {
   }
 }
 async function run() {
+  const core = await loadCore()
   try {
     // 入力キーを取得
     const inputs = getInputsFromKeys(getInputKeysFromActionYml(), core)
@@ -78,4 +82,8 @@ function getInputsFromKeys(
   )
 }
 
-run()
+run().catch((error: unknown) => {
+  // Only reachable if loading @actions/core itself fails; run() reports every other error via core.setFailed.
+  console.error(error)
+  process.exitCode = 1
+})
